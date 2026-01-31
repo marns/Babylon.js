@@ -213,9 +213,6 @@ export type SceneExplorerCommandProvider<ContextT, ModeT extends CommandMode = C
     getCommand: (context: ContextT) => SceneExplorerCommand<ModeT, TypeT>;
 }>;
 
-// Re-export SceneExplorerDragDropEvent for public API
-export type { SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
-
 type SceneTreeItemData = { type: "scene"; scene: Scene };
 
 type SectionTreeItemData = {

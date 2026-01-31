@@ -1,6 +1,7 @@
 import type { IDisposable } from "core/index";
 
-import type { SceneExplorerCommandProvider, SceneExplorerDragDropEvent, SceneExplorerSection } from "../../../components/scene/sceneExplorer";
+import type { SceneExplorerCommandProvider, SceneExplorerSection } from "../../../components/scene/sceneExplorer";
+import type { SceneExplorerDragDropEvent } from "../../../components/scene/sceneExplorerDragDrop";
 import type { IService, ServiceDefinition } from "../../../modularity/serviceDefinition";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISelectionService } from "../../selectionService";
@@ -51,7 +52,7 @@ export interface ISceneExplorerService extends IService<typeof SceneExplorerServ
      * Consumers can use this to intercept or customize the drop behavior.
      * Call `event.preventDefault()` to cancel the default reparenting behavior.
      */
-    onDragDrop: ((event: SceneExplorerDragDropEvent) => void) | null;
+    onDragDrop: ((event: SceneExplorerDragDropEvent) => void) | undefined;
 }
 
 /**
@@ -69,7 +70,7 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
         let dragToReparentEnabled = true;
         const dragToReparentObservable = new Observable<void>();
 
-        let onDragDropCallback: ((event: SceneExplorerDragDropEvent) => void) | null = null;
+        let onDragDropCallback: ((event: SceneExplorerDragDropEvent) => void) | undefined = undefined;
 
         const registration = shellService.addSidePane({
             key: "Scene Explorer",
@@ -97,7 +98,7 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                                 selectedEntity={entity}
                                 setSelectedEntity={(entity) => (selectionService.selectedEntity = entity)}
                                 enableDragToReparent={enableDragToReparent}
-                                onDragDrop={onDragDropCallback ?? undefined}
+                                onDragDrop={onDragDropCallback}
                             />
                         )}
                     </>
@@ -121,7 +122,7 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
             get onDragDrop() {
                 return onDragDropCallback;
             },
-            set onDragDrop(value: ((event: SceneExplorerDragDropEvent) => void) | null) {
+            set onDragDrop(value: ((event: SceneExplorerDragDropEvent) => void) | undefined) {
                 onDragDropCallback = value;
             },
             dispose: () => {
