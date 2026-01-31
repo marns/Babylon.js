@@ -406,6 +406,12 @@ const useStyles = makeStyles({
     },
 });
 
+const dropPositionClasses: Record<DropPosition, keyof ReturnType<typeof useStyles>> = {
+    inside: "treeItemDropTargetInside",
+    before: "treeItemDropTargetBefore",
+    after: "treeItemDropTargetAfter",
+};
+
 const ActionCommand: FunctionComponent<{ command: SceneExplorerCommand<"inline", "action"> }> = (props) => {
     const { command } = props;
 
@@ -713,9 +719,7 @@ const EntityTreeItem: FunctionComponent<{
                     className={mergeClasses(
                         classes.treeItem,
                         isDragging && classes.treeItemDragging,
-                        dropPosition === "inside" && classes.treeItemDropTargetInside,
-                        dropPosition === "before" && classes.treeItemDropTargetBefore,
-                        dropPosition === "after" && classes.treeItemDropTargetAfter
+                        dropPosition ? classes[dropPositionClasses[dropPosition]] : undefined
                     )}
                     key={entityId}
                     value={entityId}
@@ -732,7 +736,11 @@ const EntityTreeItem: FunctionComponent<{
                 >
                     <TreeItemLayout
                         iconBefore={entityItem.icon ? <entityItem.icon entity={entityItem.entity} /> : null}
-                        className={mergeClasses(hasChildren ? classes.treeItemLayoutBranch : classes.treeItemLayoutLeaf, compactMode ? classes.treeItemLayoutCompact : undefined)}
+                        className={mergeClasses(
+                            hasChildren ? classes.treeItemLayoutBranch : classes.treeItemLayoutLeaf,
+                            compactMode ? classes.treeItemLayoutCompact : undefined,
+                            dropPosition ? classes[dropPositionClasses[dropPosition]] : undefined
+                        )}
                         style={isSelected ? { backgroundColor: tokens.colorNeutralBackground1Selected } : undefined}
                         actions={actions}
                         aside={{
