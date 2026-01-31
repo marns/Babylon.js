@@ -5,8 +5,9 @@ import type { ComponentType, FunctionComponent } from "react";
 
 import type { IDisposable, IReadonlyObservable, Nullable, Scene } from "core/index";
 
-import type { DragEndEvent, DragMoveEvent, DragStartEvent } from "@dnd-kit/core";
-import { DndContext, DragOverlay, PointerSensor, useDraggable, useDroppable, useSensor, useSensors } from "@dnd-kit/core";
+import { DndContext, DragOverlay, useDraggable, useDroppable } from "@dnd-kit/core";
+import { useSceneExplorerDragDrop, useDragSensors, type DragDropConfig, type DropPosition, type SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
+
 import { VirtualizerScrollView } from "@fluentui-contrib/react-virtualizer";
 import {
     Body1,
@@ -47,7 +48,12 @@ export type EntityBase = Readonly<{
 }>;
 
 const SyntheticUniqueIds = new WeakMap<EntityBase, number>();
-function GetEntityId(entity: EntityBase): number {
+
+/**
+ * Gets a unique ID for an entity. Uses the entity's uniqueId if available,
+ * otherwise generates and caches a synthetic ID.
+ */
+export function GetEntityId(entity: EntityBase): number {
     if (entity.uniqueId !== undefined) {
         return entity.uniqueId;
     }
@@ -128,31 +134,6 @@ export type SceneExplorerSection<T> = Readonly<{
     dragDropConfig?: DragDropConfig<T>;
 }>;
 
-/**
- * Configuration for drag-and-drop behavior within a Scene Explorer section.
- * Allows sections to implement their own reparenting logic.
- */
-export type DragDropConfig<T> = {
-    /**
-     * Determines if a specific entity can be dragged.
-     * Defaults to true for all entities if not provided.
-     */
-    canDrag?: (entity: T) => boolean;
-
-    /**
-     * Validates if dropping draggedEntity onto targetEntity at the given position would be valid.
-     * Use this for cycle detection and other validation logic.
-     * Defaults to true if not provided.
-     */
-    canDrop?: (draggedEntity: T, targetEntity: T, dropPosition: DropPosition) => boolean;
-
-    /**
-     * Performs the actual reparent/reorder operation.
-     * Called when a valid drop occurs and the default behavior is not prevented.
-     */
-    performDrop?: (draggedEntity: T, targetEntity: T, dropPosition: DropPosition) => void;
-};
-
 type InlineCommand = {
     /**
      * An icon component to render for the command. Required for inline commands.
@@ -232,51 +213,8 @@ export type SceneExplorerCommandProvider<ContextT, ModeT extends CommandMode = C
     getCommand: (context: ContextT) => SceneExplorerCommand<ModeT, TypeT>;
 }>;
 
-/**
- * Represents where in relation to the target entity a dragged item will be dropped.
- * Used by the Scene Explorer's drag-to-reparent feature to indicate drop position.
- *
- * - `"before"` - Insert as a sibling before the target (shares target's parent)
- * - `"inside"` - Insert as a child of the target (target becomes the new parent)
- * - `"after"` - Insert as a sibling after the target (shares target's parent)
- */
-export type DropPosition = "before" | "inside" | "after";
-
-/**
- * Event data for drag-drop operations in the Scene Explorer.
- * Passed to the `onDragDrop` callback when a user drops a node onto another.
- *
- * @example
- * ```typescript
- * sceneExplorerService.onDragDrop = (event) => {
- *     console.log(`Dropped ${event.draggedEntity.name} ${event.dropPosition} ${event.targetEntity.name}`);
- *     // Call preventDefault() to handle the reparenting yourself
- *     // event.preventDefault();
- * };
- * ```
- */
-export type SceneExplorerDragDropEvent = {
-    /**
-     * The entity being dragged.
-     */
-    draggedEntity: EntityBase;
-
-    /**
-     * The entity being dropped onto (the drop target).
-     */
-    targetEntity: EntityBase;
-
-    /**
-     * Where the dragged entity will be placed relative to the target.
-     */
-    dropPosition: DropPosition;
-
-    /**
-     * Call this to prevent the default reparenting behavior.
-     * Use this when you want to handle the drop operation yourself.
-     */
-    preventDefault: () => void;
-};
+// Re-export SceneExplorerDragDropEvent for public API
+export type { SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
 
 type SceneTreeItemData = { type: "scene"; scene: Scene };
 
@@ -298,6 +236,11 @@ type EntityTreeItemData = {
 };
 
 type TreeItemData = SceneTreeItemData | SectionTreeItemData | EntityTreeItemData;
+
+function getEntityName(allTreeItems: Map<TreeItemValue, SectionTreeItemData | EntityTreeItemData>, entity: EntityBase): string {
+    const item = allTreeItems.get(GetEntityId(entity));
+    return item?.type === "entity" ? item.getDisplayInfo().name : "";
+}
 
 function ExpandOrCollapseAll(treeItem: SectionTreeItemData | EntityTreeItemData, open: boolean, openItems: Set<TreeItemValue>) {
     const addOrRemove = open ? openItems.add.bind(openItems) : openItems.delete.bind(openItems);
@@ -455,8 +398,10 @@ const useStyles = makeStyles({
     treeItemDropTargetInside: {
         boxShadow: `inset 0 0 0 2px ${tokens.colorBrandForeground1}`,
     },
-    // Single sibling line style - used for both before and after
-    treeItemDropTargetSibling: {
+    treeItemDropTargetBefore: {
+        boxShadow: `inset 0 2px 0 0 ${tokens.colorBrandForeground1}`,
+    },
+    treeItemDropTargetAfter: {
         boxShadow: `inset 0 -2px 0 0 ${tokens.colorBrandForeground1}`,
     },
 });
@@ -637,6 +582,7 @@ const EntityTreeItem: FunctionComponent<{
 
     const entityId = GetEntityId(entityItem.entity);
     const { dragDropConfig } = entityItem;
+    const hasChildren = !!entityItem.children?.length;
     const canDrag = enableDragToReparent && (dragDropConfig?.canDrag?.(entityItem.entity) ?? !!dragDropConfig);
 
     // dnd-kit draggable hook
@@ -661,8 +607,6 @@ const EntityTreeItem: FunctionComponent<{
         },
         [setDragRef, setDropRef]
     );
-
-    const hasChildren = !!entityItem.children?.length;
 
     const displayInfo = useResource(
         useCallback(() => {
@@ -770,7 +714,8 @@ const EntityTreeItem: FunctionComponent<{
                         classes.treeItem,
                         isDragging && classes.treeItemDragging,
                         dropPosition === "inside" && classes.treeItemDropTargetInside,
-                        (dropPosition === "before" || dropPosition === "after") && classes.treeItemDropTargetSibling
+                        dropPosition === "before" && classes.treeItemDropTargetBefore,
+                        dropPosition === "after" && classes.treeItemDropTargetAfter
                     )}
                     key={entityId}
                     value={entityId}
@@ -843,19 +788,6 @@ export const SceneExplorer: FunctionComponent<{
     const [openItems, setOpenItems] = useState(new Set<TreeItemValue>());
     const [sceneVersion, setSceneVersion] = useState(0);
     const scrollViewRef = useRef<ScrollToInterface>(null);
-    const [draggedEntity, setDraggedEntity] = useState<Nullable<EntityBase>>(null);
-    const [draggedEntityName, setDraggedEntityName] = useState<string>("");
-    const [currentDropPosition, setCurrentDropPosition] = useState<DropPosition | null>(null);
-    const [currentDropTarget, setCurrentDropTarget] = useState<Nullable<EntityBase>>(null);
-
-    // dnd-kit sensor configuration - use pointer sensor for better cross-browser support
-    const sensors = useSensors(
-        useSensor(PointerSensor, {
-            activationConstraint: {
-                distance: 5, // Require 5px movement before starting drag
-            },
-        })
-    );
 
     // We only want to scroll to the selected item if it was externally selected (outside of SceneExplorer).
     const previousSelectedEntity = useRef(selectedEntity);
@@ -975,6 +907,31 @@ export const SceneExplorer: FunctionComponent<{
 
         return [sceneTreeItem, sectionTreeItems, allTreeItems] as const;
     }, [scene, sceneVersion, sections]);
+
+    // Drag-drop hooks - sensors and state/handlers for DndContext
+    const sensors = useDragSensors();
+    const { draggedEntity, currentDropPosition, currentDropTarget, onDragStart, onDragMove, onDragEnd, onDragCancel } =
+        useSceneExplorerDragDrop<EntityBase>({
+        allTreeItems,
+        openItems,
+        onDragDrop,
+        onDropped: useCallback(
+            (draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => {
+                // Notify that the entity was reparented so the tree can refresh
+                setSceneVersion((v) => v + 1);
+
+                // Expand the target node when dropping inside so the user can see the dropped item
+                if (dropPosition === "inside") {
+                    openItems.add(GetEntityId(targetEntity));
+                    setOpenItems(new Set(openItems));
+                }
+
+                // Select the dragged entity so the user can see its properties
+                setSelectedEntity(draggedEntity);
+            },
+            [openItems]
+        ),
+    });
 
     const visibleItems = useMemo(() => {
         // This will track the items in the order they were traversed (which is what the flat tree expects).
@@ -1142,148 +1099,8 @@ export const SceneExplorer: FunctionComponent<{
         setOpenItems(new Set(openItems));
     };
 
-    // dnd-kit drag start handler
-    const handleDragStart = useCallback(
-        (event: DragStartEvent) => {
-            const entity = event.active.data.current?.entity as EntityBase | undefined;
-            if (entity) {
-                setDraggedEntity(entity);
-                // Get entity name for the drag overlay
-                const treeItem = allTreeItems.get(GetEntityId(entity));
-                if (treeItem && treeItem.type === "entity") {
-                    const displayInfo = treeItem.getDisplayInfo();
-                    setDraggedEntityName(displayInfo.name);
-                    displayInfo.dispose?.();
-                }
-            }
-        },
-        [allTreeItems]
-    );
-
-    // Helper function to calculate drop position from pointer Y coordinate relative to element
-    const calculateDropPosition = useCallback((clientY: number, overRect: DOMRect): DropPosition => {
-        const relativeY = clientY - overRect.top;
-        const height = overRect.height;
-
-        if (relativeY < height * 0.25) {
-            return "before";
-        } else if (relativeY > height * 0.75) {
-            return "after";
-        } else {
-            return "inside";
-        }
-    }, []);
-
-    // dnd-kit drag move handler - track drop position based on pointer location
-    const handleDragMove = useCallback(
-        (event: DragMoveEvent) => {
-            const { over, activatorEvent } = event;
-
-            if (!over || !draggedEntity) {
-                setCurrentDropPosition(null);
-                setCurrentDropTarget(null);
-                return;
-            }
-
-            const targetEntity = over.data.current?.entity as EntityBase | undefined;
-            const dragDropConfig = over.data.current?.dragDropConfig as DragDropConfig<unknown> | undefined;
-
-            if (!targetEntity || !dragDropConfig || targetEntity === draggedEntity) {
-                setCurrentDropPosition(null);
-                setCurrentDropTarget(null);
-                return;
-            }
-
-            // Get pointer coordinates from the activator event
-            const pointerEvent = activatorEvent as PointerEvent | MouseEvent | TouchEvent;
-            let clientY: number;
-            if ("clientY" in pointerEvent) {
-                clientY = pointerEvent.clientY;
-            } else if ("touches" in pointerEvent && pointerEvent.touches.length > 0) {
-                clientY = pointerEvent.touches[0].clientY;
-            } else {
-                return;
-            }
-
-            // We need to get the current pointer position, not the initial activator event position
-            // The delta gives us how much the pointer has moved since drag start
-            const initialY = clientY;
-            const currentY = initialY + event.delta.y;
-
-            // Get the droppable element's rect
-            const overRect = over.rect;
-            const dropPos = calculateDropPosition(currentY, overRect as unknown as DOMRect);
-
-            // Validate with canDrop
-            const canDrop = dragDropConfig.canDrop?.(draggedEntity, targetEntity, dropPos) ?? true;
-            if (canDrop) {
-                setCurrentDropPosition(dropPos);
-                setCurrentDropTarget(targetEntity);
-            } else {
-                setCurrentDropPosition(null);
-                setCurrentDropTarget(null);
-            }
-        },
-        [draggedEntity, calculateDropPosition]
-    );
-
-    // dnd-kit drag end handler - perform the drop using tracked state
-    const handleDragEnd = useCallback(
-        (_event: DragEndEvent) => {
-            if (currentDropTarget && currentDropPosition && draggedEntity) {
-                const treeItem = allTreeItems.get(GetEntityId(draggedEntity));
-                const dragDropConfig = treeItem?.type === "entity" ? treeItem.dragDropConfig : undefined;
-
-                if (dragDropConfig) {
-                    // Use section's canDrop callback to validate the drop
-                    const canDrop = dragDropConfig.canDrop?.(draggedEntity, currentDropTarget, currentDropPosition) ?? true;
-                    if (canDrop) {
-                        // Create the event object for the callback
-                        let isDefaultPrevented = false;
-                        const dragDropEvent: SceneExplorerDragDropEvent = {
-                            draggedEntity,
-                            targetEntity: currentDropTarget,
-                            dropPosition: currentDropPosition,
-                            preventDefault: () => {
-                                isDefaultPrevented = true;
-                            },
-                        };
-
-                        // Call the consumer callback if provided
-                        onDragDrop?.(dragDropEvent);
-
-                        // If the consumer prevented the default behavior, don't perform the reparent
-                        if (!isDefaultPrevented) {
-                            // Use section's performDrop callback to execute the reparent/reorder operation
-                            dragDropConfig.performDrop?.(draggedEntity, currentDropTarget, currentDropPosition);
-
-                            // Notify that the entity was reparented so the tree can refresh
-                            setSceneVersion((v) => v + 1);
-
-                            // Expand the target node when dropping inside so the user can see the dropped item
-                            if (currentDropPosition === "inside") {
-                                openItems.add(GetEntityId(currentDropTarget));
-                                setOpenItems(new Set(openItems));
-                            }
-
-                            // Select the dragged entity so the user can see its properties
-                            setSelectedEntity(draggedEntity);
-                        }
-                    }
-                }
-            }
-
-            // Reset drag state
-            setDraggedEntity(null);
-            setDraggedEntityName("");
-            setCurrentDropPosition(null);
-            setCurrentDropTarget(null);
-        },
-        [currentDropTarget, currentDropPosition, draggedEntity, allTreeItems, onDragDrop, openItems]
-    );
-
     return (
-        <DndContext sensors={sensors} onDragStart={handleDragStart} onDragMove={handleDragMove} onDragEnd={handleDragEnd}>
+        <DndContext sensors={sensors} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
             <div className={classes.rootDiv}>
                 <div className={classes.toolbarDiv}>
                     <SearchBox
@@ -1358,7 +1175,7 @@ export const SceneExplorer: FunctionComponent<{
                             textShadow: `0 1px 2px ${tokens.colorNeutralBackground1}, 0 0 4px ${tokens.colorNeutralBackground1}`,
                         }}
                     >
-                        {draggedEntityName}
+                        {getEntityName(allTreeItems, draggedEntity)}
                     </Body1>
                 ) : null}
             </DragOverlay>

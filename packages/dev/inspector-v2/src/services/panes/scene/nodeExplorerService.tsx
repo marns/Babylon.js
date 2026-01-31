@@ -3,7 +3,7 @@ import type { ServiceDefinition } from "../../../modularity/serviceDefinition";
 import type { IGizmoService } from "../../gizmoService";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISceneExplorerService } from "./sceneExplorerService";
-import type { DropPosition } from "../../../components/scene/sceneExplorer";
+import type { DropPosition } from "../../../components/scene/sceneExplorerDragDrop";
 
 import {
     BorderNoneRegular,
@@ -156,13 +156,15 @@ export const NodeExplorerServiceDefinition: ServiceDefinition<[], [ISceneExplore
                         newParent = targetNode.parent;
                     }
 
-                    // Perform the reparent, preserving world transform if possible
-                    if (draggedNode instanceof TransformNode) {
-                        // setParent preserves the world position/rotation/scale
-                        draggedNode.setParent(newParent);
-                    } else {
-                        // Fallback for non-TransformNode nodes
-                        draggedNode.parent = newParent;
+                    // Only reparent if the parent is actually changing
+                    if (draggedNode.parent !== newParent) {
+                        if (draggedNode instanceof TransformNode) {
+                            // setParent preserves the world position/rotation/scale
+                            draggedNode.setParent(newParent);
+                        } else {
+                            // Fallback for non-TransformNode nodes
+                            draggedNode.parent = newParent;
+                        }
                     }
 
                     // Handle sibling ordering for before/after positions
