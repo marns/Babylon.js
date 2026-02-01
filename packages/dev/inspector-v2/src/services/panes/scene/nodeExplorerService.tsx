@@ -1,6 +1,7 @@
 import type { IDisposable, Node, Nullable } from "core/index";
-import type { DropPosition } from "../../../components/scene/sceneExplorerDragDrop";
 import type { ServiceDefinition } from "../../../modularity/serviceDefinition";
+
+import { createReparentDragProvider } from "../../../components/scene/dragDropProviders/reparentDragProvider";
 import type { IGizmoService } from "../../gizmoService";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISceneExplorerService } from "./sceneExplorerService";
@@ -131,73 +132,22 @@ export const NodeExplorerServiceDefinition: ServiceDefinition<[], [ISceneExplore
                 scene.onLightRemovedObservable,
             ],
             getEntityMovedObservables: () => [nodeMovedObservable],
-            dragDropConfig: {
-                // Note: service-level canDrag is checked separately in useSceneExplorerDragDrop
-                canDrag: () => true,
-                canDrop: (draggedNode: Node, targetNode: Node, dropPosition: DropPosition) => {
-                    // Determine the effective new parent for cycle detection
-                    const effectiveNewParent = dropPosition === "inside" ? targetNode : targetNode.parent;
-
-                    // Check if dropping would create a cycle (dropping onto self or any descendant)
-                    if (effectiveNewParent) {
-                        return !(targetNode === draggedNode || targetNode.isDescendantOf(draggedNode));
-                    }
-                    return true;
-                },
-
-                onDrop: (draggedNode: Node, targetNode: Node, dropPosition: DropPosition) => {
-                    // Compute the new parent from the resolved target/position
-                    const newParent = dropPosition === "inside" ? targetNode : targetNode.parent;
-
-                    // Only re-parent if the parent is actually changing
-                    if (draggedNode.parent !== newParent) {
-                        if (draggedNode instanceof TransformNode) {
-                            // setParent preserves the world position/rotation/scale
-                            draggedNode.setParent(newParent);
-                        } else {
-                            // Fallback for non-TransformNode nodes
-                            draggedNode.parent = newParent;
-                        }
-                    }
-
-                    // Handle sibling ordering for before/after positions
-                    if (dropPosition !== "inside") {
-                        // Get the actual internal siblings array (not a copy)
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        const siblings: Node[] | null = newParent ? (newParent as any)._children : draggedNode.getScene().rootNodes;
-
-                        if (siblings) {
-                            const draggedIndex = siblings.indexOf(draggedNode);
-                            const targetIndex = siblings.indexOf(targetNode);
-
-                            if (draggedIndex !== -1 && targetIndex !== -1 && draggedIndex !== targetIndex) {
-                                // Remove from current position
-                                siblings.splice(draggedIndex, 1);
-                                // Calculate new index (adjust if dragged was before target)
-                                let insertIndex = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
-                                if (dropPosition === "after") {
-                                    insertIndex++;
-                                }
-                                // Insert at new position
-                                siblings.splice(insertIndex, 0, draggedNode);
-
-                                // For root nodes, update the _sceneRootNodesIndex for all affected nodes
-                                // since Babylon.js uses this index for fast removal via swap-and-pop
-                                if (!newParent) {
-                                    for (let i = 0; i < siblings.length; i++) {
-                                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                                        (siblings[i] as any)._nodeDataStorage._sceneRootNodesIndex = i;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Notify observers that the node was moved
-                    nodeMovedObservable.notifyObservers(draggedNode);
-                },
-            },
         });
+
+        // Set the default drag-drop provider for reparenting nodes
+        sceneExplorerService.dragDropProvider = createReparentDragProvider<Node>(
+            (node, parent) => {
+                if (node instanceof TransformNode) {
+                    // setParent preserves the world position/rotation/scale
+                    node.setParent(parent);
+                } else {
+                    // Fallback for non-TransformNode nodes
+                    node.parent = parent;
+                }
+                nodeMovedObservable.notifyObservers(node);
+            },
+            (node, potentialAncestor) => node.isDescendantOf(potentialAncestor)
+        );
 
         const abstractMeshBoundingBoxCommandRegistration = sceneExplorerService.addEntityCommand({
             predicate: (entity: unknown): entity is AbstractMesh => entity instanceof AbstractMesh && entity.getTotalVertices() > 0,

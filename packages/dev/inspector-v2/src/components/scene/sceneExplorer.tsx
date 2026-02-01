@@ -4,7 +4,7 @@ import type { FluentIcon } from "@fluentui/react-icons";
 import type { ComponentType, FunctionComponent } from "react";
 
 import type { IDisposable, IReadonlyObservable, Nullable, Scene } from "core/index";
-import type { DragDropConfig, DropPosition, SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
+import type { DragDropProvider, DropVisual } from "./sceneExplorerDragDrop";
 
 import { DndContext, DragOverlay, useDraggable, useDroppable } from "@dnd-kit/core";
 import { VirtualizerScrollView } from "@fluentui-contrib/react-virtualizer";
@@ -128,12 +128,6 @@ export type SceneExplorerSection<T> = Readonly<{
      * A function that returns an array of observables for when entities are moved (e.g. re-parented) within the scene.
      */
     getEntityMovedObservables?: () => readonly IReadonlyObservable<T>[];
-
-    /**
-     * Optional drag-drop configuration for this section.
-     * If not provided, drag-drop is disabled for entities in this section.
-     */
-    dragDropConfig?: DragDropConfig<T>;
 }>;
 
 type InlineCommand = {
@@ -231,7 +225,6 @@ type EntityTreeItemData = {
     children?: EntityTreeItemData[];
     icon?: ComponentType<{ entity: unknown }>;
     getDisplayInfo: () => EntityDisplayInfo;
-    dragDropConfig?: DragDropConfig<unknown>;
 };
 
 type TreeItemData = SceneTreeItemData | SectionTreeItemData | EntityTreeItemData;
@@ -415,11 +408,20 @@ const useStyles = makeStyles({
     },
 });
 
-const DropPositionClasses = {
-    inside: "treeItemDropTargetInside",
-    before: "treeItemDropTargetBefore",
-    after: "treeItemDropTargetAfter",
-} as const satisfies Record<DropPosition, keyof ReturnType<typeof useStyles>>;
+/**
+ * Get the CSS class name for a DropVisual.
+ */
+function getDropVisualClass(visual: DropVisual | null, classes: ReturnType<typeof useStyles>): string | undefined {
+    if (!visual) return undefined;
+    switch (visual.type) {
+        case "border":
+            return classes.treeItemDropTargetInside;
+        case "edge":
+            return visual.edge === "top" ? classes.treeItemDropTargetBefore : classes.treeItemDropTargetAfter;
+        case "none":
+            return undefined;
+    }
+}
 
 const ActionCommand: FunctionComponent<{ command: SceneExplorerCommand<"inline", "action"> }> = (props) => {
     const { command } = props;
@@ -587,19 +589,16 @@ const EntityTreeItem: FunctionComponent<{
     commandProviders: readonly SceneExplorerCommandProvider<EntityBase>[];
     expandAll: () => void;
     collapseAll: () => void;
-    enableDragToReparent?: boolean;
-    dropPosition: DropPosition | null;
+    dropVisual: DropVisual | null;
+    provider?: DragDropProvider<EntityBase, unknown>;
 }> = (props) => {
-    const { entityItem, isSelected, select, isFiltering, commandProviders, expandAll, collapseAll, enableDragToReparent, dropPosition } = props;
+    const { entityItem, isSelected, select, isFiltering, commandProviders, expandAll, collapseAll, dropVisual, provider } = props;
 
     const classes = useStyles();
     const [compactMode] = useCompactMode();
 
     const entityId = GetEntityId(entityItem.entity);
-    const { dragDropConfig } = entityItem;
     const hasChildren = !!entityItem.children?.length;
-    // Only check if drag-drop is structurally enabled; actual canDrag validation happens in onDragStart
-    const isDragEnabled = enableDragToReparent && !!dragDropConfig;
 
     // dnd-kit draggable hook
     const {
@@ -609,15 +608,15 @@ const EntityTreeItem: FunctionComponent<{
         isDragging,
     } = useDraggable({
         id: entityId,
-        data: { entity: entityItem.entity, dragDropConfig },
-        disabled: !isDragEnabled,
+        data: { entity: entityItem.entity, provider },
+        disabled: !provider,
     });
 
     // dnd-kit droppable hook
     const { setNodeRef: setDropRef } = useDroppable({
         id: entityId,
-        data: { entity: entityItem.entity, dragDropConfig },
-        disabled: !enableDragToReparent || !dragDropConfig,
+        data: { entity: entityItem.entity, provider },
+        disabled: !provider,
     });
 
     // Combine refs for both draggable and droppable
@@ -731,7 +730,7 @@ const EntityTreeItem: FunctionComponent<{
             <MenuTrigger disableButtonEnhancement>
                 <FlatTreeItem
                     ref={setNodeRef}
-                    className={mergeClasses(classes.treeItem, isDragging && classes.treeItemDragging, dropPosition ? classes[DropPositionClasses[dropPosition]] : undefined)}
+                    className={mergeClasses(classes.treeItem, isDragging && classes.treeItemDragging, getDropVisualClass(dropVisual, classes))}
                     key={entityId}
                     value={entityId}
                     // Disable manual expand/collapse when a filter is active.
@@ -750,7 +749,7 @@ const EntityTreeItem: FunctionComponent<{
                         className={mergeClasses(
                             hasChildren ? classes.treeItemLayoutBranch : classes.treeItemLayoutLeaf,
                             compactMode ? classes.treeItemLayoutCompact : undefined,
-                            dropPosition ? classes[DropPositionClasses[dropPosition]] : undefined
+                            getDropVisualClass(dropVisual, classes)
                         )}
                         style={isSelected ? { backgroundColor: tokens.colorNeutralBackground1Selected } : undefined}
                         actions={actions}
@@ -797,14 +796,12 @@ export const SceneExplorer: FunctionComponent<{
     scene: Scene;
     selectedEntity?: unknown;
     setSelectedEntity?: (entity: unknown) => void;
-    enableDragToReparent?: boolean;
-    onDrop?: (event: SceneExplorerDragDropEvent) => void;
-    canDrag?: (entity: EntityBase) => boolean;
-    canDrop?: (draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean;
+    /** Optional drag-drop provider. When set, enables drag-drop with the specified behavior. */
+    dragDropProvider?: DragDropProvider<EntityBase, unknown>;
 }> = (props) => {
     const classes = useStyles();
 
-    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, enableDragToReparent, onDrop, canDrag, canDrop } = props;
+    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, dragDropProvider } = props;
 
     const [openItems, setOpenItems] = useState(new Set<TreeItemValue>());
     const [sceneVersion, setSceneVersion] = useState(0);
@@ -883,6 +880,7 @@ export const SceneExplorer: FunctionComponent<{
             allTreeItems.set(sectionTreeItem.sectionName, sectionTreeItem);
 
             let depth = 2;
+
             const createEntityTreeItemData = (entity: EntityBase, parent: SectionTreeItemData | EntityTreeItemData) => {
                 const treeItemData = {
                     type: "entity",
@@ -891,7 +889,6 @@ export const SceneExplorer: FunctionComponent<{
                     parent,
                     icon: section.entityIcon,
                     getDisplayInfo: () => section.getEntityDisplayInfo(entity),
-                    dragDropConfig: section.dragDropConfig as DragDropConfig<unknown> | undefined,
                 } as const satisfies EntityTreeItemData;
 
                 if (!parent.children) {
@@ -931,14 +928,9 @@ export const SceneExplorer: FunctionComponent<{
 
     // Drag-drop hooks - sensors and state/handlers for DndContext
     const sensors = useDragSensors();
-    const { draggedEntity, currentDropPosition, currentDropTarget, lastDropResult, onDragStart, onDragMove, onDragEnd, onDragCancel } =
-        useSceneExplorerDragDrop<EntityBase>({
-            allTreeItems,
-            openItems,
-            onDrop,
-            canDrag,
-            canDrop,
-        });
+    const { draggedEntity, currentDropVisual, currentDropTarget, lastDropResult, onDragStart, onDragMove, onDragEnd, onDragCancel } =
+        useSceneExplorerDragDrop<EntityBase>();
+
 
     // Handle UI updates after a successful drop
     useEffect(() => {
@@ -946,8 +938,9 @@ export const SceneExplorer: FunctionComponent<{
             // Notify that the entity was reparented so the tree can refresh
             setSceneVersion((v) => v + 1);
 
-            // Expand the target node when dropping inside so the user can see the dropped item
-            if (lastDropResult.dropPosition === "inside") {
+            // Expand the target node when it becomes the new parent so the user can see the dropped item
+            // We expand if the target was shown with a border visual (indicating reparent-under-target)
+            if (lastDropResult.dropVisual.type === "border") {
                 openItems.add(GetEntityId(lastDropResult.targetEntity));
                 setOpenItems(new Set(openItems));
             }
@@ -1182,8 +1175,8 @@ export const SceneExplorer: FunctionComponent<{
                                         commandProviders={entityCommandProviders as SceneExplorerCommandProvider<EntityBase>[]}
                                         expandAll={() => expandAll(item)}
                                         collapseAll={() => collapseAll(item)}
-                                        enableDragToReparent={enableDragToReparent}
-                                        dropPosition={currentDropTarget === item.entity ? currentDropPosition : null}
+                                        dropVisual={currentDropTarget === item.entity ? currentDropVisual : null}
+                                        provider={dragDropProvider}
                                     />
                                 );
                             }
