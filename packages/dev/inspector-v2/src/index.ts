@@ -2,7 +2,7 @@
 export * from "./components/properties/boundProperty";
 export * from "./components/properties/linkToEntityPropertyLine";
 export type { EntityBase, EntityDisplayInfo, SceneExplorerCommand, SceneExplorerCommandProvider, SceneExplorerSection } from "./components/scene/sceneExplorer";
-export type { DragDropConfig, DropPosition, SceneExplorerDragDropEvent } from "./components/scene/sceneExplorerDragDrop";
+export type { DragDropConfig, DropPosition, SceneExplorerDropEvent } from "./components/scene/sceneExplorerDragDrop";
 export * from "./components/extensibleAccordion";
 export { SidePaneContainer } from "./components/pane";
 export * from "./components/theme";

@@ -6,7 +6,7 @@ import type { ComponentType, FunctionComponent } from "react";
 import type { IDisposable, IReadonlyObservable, Nullable, Scene } from "core/index";
 
 import { DndContext, DragOverlay, useDraggable, useDroppable } from "@dnd-kit/core";
-import { useSceneExplorerDragDrop, useDragSensors, type DragDropConfig, type DropPosition, type SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
+import { useSceneExplorerDragDrop, useDragSensors, type DragDropConfig, type DropPosition, type SceneExplorerDropEvent } from "./sceneExplorerDragDrop";
 
 import { VirtualizerScrollView } from "@fluentui-contrib/react-virtualizer";
 import {
@@ -586,13 +586,14 @@ const EntityTreeItem: FunctionComponent<{
     const entityId = GetEntityId(entityItem.entity);
     const { dragDropConfig } = entityItem;
     const hasChildren = !!entityItem.children?.length;
-    const canDrag = enableDragToReparent && (dragDropConfig?.canDrag?.(entityItem.entity) ?? !!dragDropConfig);
+    // Only check if drag-drop is structurally enabled; actual canDrag validation happens in onDragStart
+    const isDragEnabled = enableDragToReparent && !!dragDropConfig;
 
     // dnd-kit draggable hook
     const { attributes, listeners, setNodeRef: setDragRef, isDragging } = useDraggable({
         id: entityId,
         data: { entity: entityItem.entity, dragDropConfig },
-        disabled: !canDrag,
+        disabled: !isDragEnabled,
     });
 
     // dnd-kit droppable hook
@@ -784,11 +785,13 @@ export const SceneExplorer: FunctionComponent<{
     selectedEntity?: unknown;
     setSelectedEntity?: (entity: unknown) => void;
     enableDragToReparent?: boolean;
-    onDragDrop?: (event: SceneExplorerDragDropEvent) => void;
+    onDrop?: (event: SceneExplorerDropEvent) => void;
+    canDrag?: (entity: EntityBase) => boolean;
+    canDrop?: (draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean;
 }> = (props) => {
     const classes = useStyles();
 
-    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, enableDragToReparent, onDragDrop } = props;
+    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, enableDragToReparent, onDrop, canDrag, canDrop } = props;
 
     const [openItems, setOpenItems] = useState(new Set<TreeItemValue>());
     const [sceneVersion, setSceneVersion] = useState(0);
@@ -915,28 +918,31 @@ export const SceneExplorer: FunctionComponent<{
 
     // Drag-drop hooks - sensors and state/handlers for DndContext
     const sensors = useDragSensors();
-    const { draggedEntity, currentDropPosition, currentDropTarget, onDragStart, onDragMove, onDragEnd, onDragCancel } =
+    const { draggedEntity, currentDropPosition, currentDropTarget, lastDropResult, onDragStart, onDragMove, onDragEnd, onDragCancel } =
         useSceneExplorerDragDrop<EntityBase>({
         allTreeItems,
         openItems,
-        onDragDrop,
-        onDropped: useCallback(
-            (draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => {
-                // Notify that the entity was reparented so the tree can refresh
-                setSceneVersion((v) => v + 1);
-
-                // Expand the target node when dropping inside so the user can see the dropped item
-                if (dropPosition === "inside") {
-                    openItems.add(GetEntityId(targetEntity));
-                    setOpenItems(new Set(openItems));
-                }
-
-                // Select the dragged entity so the user can see its properties
-                setSelectedEntity(draggedEntity);
-            },
-            [openItems]
-        ),
+        onDrop,
+        canDrag,
+        canDrop,
     });
+
+    // Handle UI updates after a successful drop
+    useEffect(() => {
+        if (lastDropResult) {
+            // Notify that the entity was reparented so the tree can refresh
+            setSceneVersion((v) => v + 1);
+
+            // Expand the target node when dropping inside so the user can see the dropped item
+            if (lastDropResult.dropPosition === "inside") {
+                openItems.add(GetEntityId(lastDropResult.targetEntity));
+                setOpenItems(new Set(openItems));
+            }
+
+            // Select the dragged entity so the user can see its properties
+            setSelectedEntity(lastDropResult.draggedEntity);
+        }
+    }, [lastDropResult]);
 
     const visibleItems = useMemo(() => {
         // This will track the items in the order they were traversed (which is what the flat tree expects).

@@ -1,7 +1,7 @@
 import type { IDisposable } from "core/index";
 
-import type { SceneExplorerCommandProvider, SceneExplorerSection } from "../../../components/scene/sceneExplorer";
-import type { SceneExplorerDragDropEvent } from "../../../components/scene/sceneExplorerDragDrop";
+import type { EntityBase, SceneExplorerCommandProvider, SceneExplorerSection } from "../../../components/scene/sceneExplorer";
+import type { DropPosition, SceneExplorerDropEvent } from "../../../components/scene/sceneExplorerDragDrop";
 import type { IService, ServiceDefinition } from "../../../modularity/serviceDefinition";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISelectionService } from "../../selectionService";
@@ -52,7 +52,22 @@ export interface ISceneExplorerService extends IService<typeof SceneExplorerServ
      * Consumers can use this to intercept or customize the drop behavior.
      * Call `event.preventDefault()` to cancel the default reparenting behavior.
      */
-    onDragDrop: ((event: SceneExplorerDragDropEvent) => void) | undefined;
+    onDrop: ((event: SceneExplorerDropEvent) => void) | undefined;
+
+    /**
+     * Optional callback to determine if a node can be dragged.
+     * Return false to prevent dragging a specific node.
+     * If not set, all nodes are draggable.
+     */
+    canDrag: ((entity: EntityBase) => boolean) | undefined;
+
+    /**
+     * Optional callback to determine if a drop operation is valid.
+     * Return false to prevent dropping the dragged entity onto the target at the given position.
+     * Built-in cycle detection is always applied; this callback adds additional validation.
+     * If not set, all drops that pass cycle detection are allowed.
+     */
+    canDrop: ((draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean) | undefined;
 }
 
 /**
@@ -70,7 +85,9 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
         let dragToReparentEnabled = true;
         const dragToReparentObservable = new Observable<void>();
 
-        let onDragDropCallback: ((event: SceneExplorerDragDropEvent) => void) | undefined = undefined;
+        let onDropCallback: ((event: SceneExplorerDropEvent) => void) | undefined = undefined;
+        let canDragCallback: ((entity: EntityBase) => boolean) | undefined = undefined;
+        let canDropCallback: ((draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean) | undefined = undefined;
 
         const registration = shellService.addSidePane({
             key: "Scene Explorer",
@@ -98,7 +115,9 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                                 selectedEntity={entity}
                                 setSelectedEntity={(entity) => (selectionService.selectedEntity = entity)}
                                 enableDragToReparent={enableDragToReparent}
-                                onDragDrop={onDragDropCallback}
+                                onDrop={onDropCallback}
+                                canDrag={canDragCallback}
+                                canDrop={canDropCallback}
                             />
                         )}
                     </>
@@ -119,11 +138,23 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                     dragToReparentObservable.notifyObservers();
                 }
             },
-            get onDragDrop() {
-                return onDragDropCallback;
+            get onDrop() {
+                return onDropCallback;
             },
-            set onDragDrop(value: ((event: SceneExplorerDragDropEvent) => void) | undefined) {
-                onDragDropCallback = value;
+            set onDrop(value: ((event: SceneExplorerDropEvent) => void) | undefined) {
+                onDropCallback = value;
+            },
+            get canDrag() {
+                return canDragCallback;
+            },
+            set canDrag(value: ((entity: EntityBase) => boolean) | undefined) {
+                canDragCallback = value;
+            },
+            get canDrop() {
+                return canDropCallback;
+            },
+            set canDrop(value: ((draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean) | undefined) {
+                canDropCallback = value;
             },
             dispose: () => {
                 dragToReparentObservable.clear();

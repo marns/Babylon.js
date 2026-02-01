@@ -38,18 +38,25 @@ export type DragDropConfig<T> = {
 
 /**
  * Event data for drag-drop operations in the Scene Explorer.
- * Passed to the `onDragDrop` callback when a user drops a node onto another.
+ * Passed to the `onDrop` callback when a user drops a node onto another.
+ *
+ * Note: The targetEntity and dropPosition are already resolved.
+ * For example, dropping "after" an expanded node is redirected to "before" its first child.
+ * To compute the new parent after a drop:
+ * ```typescript
+ * const newParent = dropPosition === "inside" ? targetEntity : targetEntity.parent;
+ * ```
  *
  * @example
  * ```typescript
- * sceneExplorerService.onDragDrop = (event) => {
+ * sceneExplorerService.onDrop = (event) => {
  *     console.log(`Dropped ${event.draggedEntity.name} ${event.dropPosition} ${event.targetEntity.name}`);
  *     // Call preventDefault() to handle the reparenting yourself
  *     // event.preventDefault();
  * };
  * ```
  */
-export type SceneExplorerDragDropEvent = {
+export type SceneExplorerDropEvent = {
     /**
      * The entity being dragged.
      */
@@ -102,15 +109,33 @@ function calculateDropPosition(clientY: number, overRect: DOMRect): DropPosition
     return "inside";
 }
 
+/** Tree item data accessed by the drag-drop hook */
+interface DragDropTreeItemData<TEntity> {
+    type: string;
+    entity?: TEntity;
+    /** Child tree items - must have at minimum entity, type, and dragDropConfig for first-child redirect logic */
+    children?: readonly { type: string; entity?: TEntity; dragDropConfig?: DragDropConfig<TEntity> }[];
+    dragDropConfig?: DragDropConfig<TEntity>;
+}
+
 export interface UseSceneExplorerDragDropParams<TEntity extends EntityBase> {
-    /** Map of entity IDs to tree item data */
-    allTreeItems: Map<TreeItemValue, { type: string; entity?: TEntity; children?: DragDropTreeItem[]; dragDropConfig?: DragDropConfig<TEntity> }>;
+    /** Map of entity IDs to tree item data. Parent can be an entity or a section (for root entities). */
+    allTreeItems: Map<TreeItemValue, DragDropTreeItemData<TEntity>>;
     /** Set of currently expanded item IDs */
     openItems: Set<TreeItemValue>;
-    /** Optional callback when a drop occurs - can call preventDefault() to handle drop yourself */
-    onDragDrop?: (event: SceneExplorerDragDropEvent) => void;
-    /** Called after a successful drop (when not prevented) for UI updates */
-    onDropped?: (draggedEntity: TEntity, targetEntity: TEntity, dropPosition: DropPosition) => void;
+    /** Optional callback to validate if an entity can be dragged. Called once when drag starts. */
+    canDrag?: (entity: TEntity) => boolean;
+    /** Optional callback to validate if a drop is allowed (in addition to built-in cycle detection). */
+    canDrop?: (draggedEntity: TEntity, targetEntity: TEntity, dropPosition: DropPosition) => boolean;
+    /** Optional callback when a drop occurs - can call preventDefault() to handle the drop yourself. */
+    onDrop?: (event: SceneExplorerDropEvent) => void;
+}
+
+/** Result of a completed drop operation */
+export interface DropResult<TEntity> {
+    draggedEntity: TEntity;
+    targetEntity: TEntity;
+    dropPosition: DropPosition;
 }
 
 export interface SceneExplorerDragDropResult<TEntity extends EntityBase> {
@@ -118,6 +143,8 @@ export interface SceneExplorerDragDropResult<TEntity extends EntityBase> {
     draggedEntity: Nullable<TEntity>;
     currentDropPosition: DropPosition | null;
     currentDropTarget: Nullable<TEntity>;
+    /** Set after a successful drop (not prevented). Reset to null on next drag start. */
+    lastDropResult: Nullable<DropResult<TEntity>>;
 
     // Event handlers for DndContext
     onDragStart: (event: DragStartEvent) => void;
@@ -141,13 +168,15 @@ export function useDragSensors() {
 export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
     allTreeItems,
     openItems,
-    onDragDrop,
-    onDropped,
+    onDrop,
+    canDrag: canDragCallback,
+    canDrop: canDropCallback,
 }: UseSceneExplorerDragDropParams<TEntity>): SceneExplorerDragDropResult<TEntity> {
     // Drag state for rendering
     const [draggedEntity, setDraggedEntity] = useState<Nullable<TEntity>>(null);
     const [currentDropPosition, setCurrentDropPosition] = useState<DropPosition | null>(null);
     const [currentDropTarget, setCurrentDropTarget] = useState<Nullable<TEntity>>(null);
+    const [lastDropResult, setLastDropResult] = useState<Nullable<DropResult<TEntity>>>(null);
 
     // Ref to avoid stale closures in event handlers
     const dropStateRef = useRef<DropState<TEntity>>({ target: null, position: null, draggedEntity: null });
@@ -159,13 +188,31 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
         dropStateRef.current = { target: null, position: null, draggedEntity: null };
     }, []);
 
-    const onDragStart = useCallback((event: DragStartEvent) => {
-        const entity = event.active.data.current?.entity as TEntity | undefined;
-        if (entity) {
-            setDraggedEntity(entity);
-            dropStateRef.current.draggedEntity = entity;
-        }
-    }, []);
+    const onDragStart = useCallback(
+        (event: DragStartEvent) => {
+            const entity = event.active.data.current?.entity as TEntity | undefined;
+            if (!entity) {
+                return;
+            }
+
+            // Clear previous drop result when starting a new drag
+            setLastDropResult(null);
+
+            // Check section-level canDrag
+            const dragDropConfig = event.active.data.current?.dragDropConfig as DragDropConfig<TEntity> | undefined;
+            const sectionCanDrag = dragDropConfig?.canDrag?.(entity) ?? true;
+
+            // Check service-level canDrag callback
+            const serviceCanDrag = canDragCallback?.(entity) ?? true;
+
+            if (sectionCanDrag && serviceCanDrag) {
+                setDraggedEntity(entity);
+                dropStateRef.current.draggedEntity = entity;
+            }
+            // If canDrag returns false, we don't set draggedEntity, effectively canceling the drag
+        },
+        [canDragCallback]
+    );
 
     const onDragMove = useCallback(
         (event: DragMoveEvent) => {
@@ -207,29 +254,33 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
             const overRect = over.rect;
             let dropPos = calculateDropPosition(currentY, overRect as unknown as DOMRect);
 
+            // Resolve the final target and position
             // If "after" on an expanded node with visible children, redirect to "before" on first child
+            let resolvedTarget = targetEntity;
+            let resolvedDropPos = dropPos;
+            let resolvedDragDropConfig = dragDropConfig;
+
             if (dropPos === "after") {
                 const targetId = GetEntityId(targetEntity);
                 const targetTreeItem = allTreeItems.get(targetId);
                 if (targetTreeItem?.type === "entity" && targetTreeItem.children?.length && openItems.has(targetId)) {
                     const firstChild = targetTreeItem.children[0];
-                    if (firstChild.type === "entity" && firstChild.entity !== dragged) {
-                        setCurrentDropPosition("before");
-                        setCurrentDropTarget(firstChild.entity as TEntity);
-                        dropStateRef.current.position = "before";
-                        dropStateRef.current.target = firstChild.entity as TEntity;
-                        return;
+                    if (firstChild.type === "entity" && firstChild.entity !== dragged && firstChild.dragDropConfig) {
+                        resolvedTarget = firstChild.entity as TEntity;
+                        resolvedDropPos = "before";
+                        resolvedDragDropConfig = firstChild.dragDropConfig as DragDropConfig<TEntity>;
                     }
                 }
             }
 
-            // Validate with canDrop
-            const canDrop = dragDropConfig.canDrop?.(dragged, targetEntity, dropPos) ?? true;
-            if (canDrop) {
-                setCurrentDropPosition(dropPos);
-                setCurrentDropTarget(targetEntity);
-                dropStateRef.current.position = dropPos;
-                dropStateRef.current.target = targetEntity;
+            // Validate with section's canDrop and service-level canDrop callback using resolved target/position
+            const sectionCanDrop = resolvedDragDropConfig.canDrop?.(dragged, resolvedTarget, resolvedDropPos) ?? true;
+            const serviceCanDrop = canDropCallback?.(dragged, resolvedTarget, resolvedDropPos) ?? true;
+            if (sectionCanDrop && serviceCanDrop) {
+                setCurrentDropPosition(resolvedDropPos);
+                setCurrentDropTarget(resolvedTarget);
+                dropStateRef.current.position = resolvedDropPos;
+                dropStateRef.current.target = resolvedTarget;
             } else {
                 setCurrentDropPosition(null);
                 setCurrentDropTarget(null);
@@ -237,7 +288,7 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
                 dropStateRef.current.target = null;
             }
         },
-        [allTreeItems, openItems]
+        [allTreeItems, openItems, canDropCallback]
     );
 
     const onDragEnd = useCallback(() => {
@@ -250,7 +301,7 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
             if (dragDropConfig) {
                 // Create event for consumer callback
                 let isDefaultPrevented = false;
-                const event: SceneExplorerDragDropEvent = {
+                const event: SceneExplorerDropEvent = {
                     draggedEntity: droppedEntity,
                     targetEntity: target,
                     dropPosition: position,
@@ -260,23 +311,24 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
                 };
 
                 // Call consumer callback if provided
-                onDragDrop?.(event);
+                onDrop?.(event);
 
-                // If not prevented, perform the drop and notify
+                // If not prevented, perform the drop and set the result
                 if (!isDefaultPrevented) {
                     dragDropConfig.performDrop?.(droppedEntity, target, position);
-                    onDropped?.(droppedEntity, target, position);
+                    setLastDropResult({ draggedEntity: droppedEntity, targetEntity: target, dropPosition: position });
                 }
             }
         }
 
         resetState();
-    }, [allTreeItems, onDragDrop, onDropped, resetState]);
+    }, [allTreeItems, onDrop, resetState]);
 
     return {
         draggedEntity,
         currentDropPosition,
         currentDropTarget,
+        lastDropResult,
         onDragStart,
         onDragMove,
         onDragEnd,

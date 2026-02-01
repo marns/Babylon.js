@@ -132,8 +132,7 @@ export const NodeExplorerServiceDefinition: ServiceDefinition<[], [ISceneExplore
             ],
             getEntityMovedObservables: () => [nodeMovedObservable],
             dragDropConfig: {
-                canDrag: () => true,
-
+                // Note: service-level canDrag is checked separately in useSceneExplorerDragDrop
                 canDrop: (draggedNode: Node, targetNode: Node, dropPosition: DropPosition) => {
                     // Determine the effective new parent for cycle detection
                     const effectiveNewParent = dropPosition === "inside" ? targetNode : targetNode.parent;
@@ -146,15 +145,8 @@ export const NodeExplorerServiceDefinition: ServiceDefinition<[], [ISceneExplore
                 },
 
                 performDrop: (draggedNode: Node, targetNode: Node, dropPosition: DropPosition) => {
-                    // Determine the new parent based on drop position
-                    let newParent: Nullable<Node>;
-                    if (dropPosition === "inside") {
-                        // Drop inside the target - target becomes the parent
-                        newParent = targetNode;
-                    } else {
-                        // Drop before/after the target - use target's parent (can be null for root)
-                        newParent = targetNode.parent;
-                    }
+                    // Compute the new parent from the resolved target/position
+                    const newParent = dropPosition === "inside" ? targetNode : targetNode.parent;
 
                     // Only reparent if the parent is actually changing
                     if (draggedNode.parent !== newParent) {
