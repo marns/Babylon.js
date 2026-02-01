@@ -30,7 +30,6 @@ import {
 } from "@fluentui/react-components";
 import { ArrowCollapseAllRegular, ArrowExpandAllRegular, createFluentIcon, FilterRegular, GlobeRegular, TextSortAscendingRegular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocalStorage } from "usehooks-ts";
 import { useSceneExplorerDragDrop } from "./sceneExplorerDragDrop";
 
 import { UniqueIdGenerator } from "core/Misc/uniqueIdGenerator";
@@ -770,10 +769,14 @@ export const SceneExplorer: FunctionComponent<{
     setSelectedEntity?: (entity: unknown) => void;
     /** Optional drag-drop provider. When set, enables drag-drop with the specified behavior. */
     dragDropProvider?: DragDropProvider<EntityBase, unknown>;
+    /** Whether to sort entities alphabetically. */
+    isSorted: boolean;
+    /** Callback to change the sorted state. */
+    setIsSorted: (value: boolean) => void;
 }> = (props) => {
     const classes = useStyles();
 
-    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, dragDropProvider } = props;
+    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, dragDropProvider, isSorted, setIsSorted } = props;
 
     const [openItems, setOpenItems] = useState(new Set<TreeItemValue>());
     const [sceneVersion, setSceneVersion] = useState(0);
@@ -787,7 +790,6 @@ export const SceneExplorer: FunctionComponent<{
     };
 
     const [itemsFilter, setItemsFilter] = useState("");
-    const [isSorted, setIsSorted] = useLocalStorage("Babylon/Settings/SceneExplorer/IsSorted", false);
 
     useEffect(() => {
         setSceneVersion((version) => version + 1);
@@ -900,7 +902,6 @@ export const SceneExplorer: FunctionComponent<{
 
     // Drag-drop hook - state and helper for vanilla HTML5 drag/drop
     const { draggedEntity, currentDropVisual, currentDropTarget, lastDropResult, createDragProps } = useSceneExplorerDragDrop<EntityBase>();
-
 
     // Handle UI updates after a successful drop
     useEffect(() => {
@@ -1102,7 +1103,7 @@ export const SceneExplorer: FunctionComponent<{
                     appearance="transparent"
                     checkedIcon={TextSortAscendingRegular}
                     value={isSorted}
-                    onChange={() => setIsSorted((isSorted) => !isSorted)}
+                    onChange={setIsSorted}
                 />
             </div>
             <FlatTree className={classes.tree} openItems={openItems} onOpenChange={onOpenChange} aria-label="Scene Explorer Tree">

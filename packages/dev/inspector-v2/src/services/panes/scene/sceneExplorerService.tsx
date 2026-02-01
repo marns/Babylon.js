@@ -1,4 +1,4 @@
-import type { IDisposable } from "core/index";
+import type { IDisposable, IReadonlyObservable } from "core/index";
 
 import type { EntityBase, SceneExplorerCommandProvider, SceneExplorerSection } from "../../../components/scene/sceneExplorer";
 import type { DragDropProvider } from "../../../components/scene/sceneExplorerDragDrop";
@@ -16,6 +16,8 @@ import { ObservableCollection } from "../../../misc/observableCollection";
 import { SceneContextIdentity } from "../../sceneContext";
 import { SelectionServiceIdentity } from "../../selectionService";
 import { ShellServiceIdentity } from "../../shellService";
+
+const IsSortedLocalStorageKey = "Babylon.js:Inspector:SceneExplorer:IsSorted";
 
 export const SceneExplorerServiceIdentity = Symbol("SceneExplorer");
 
@@ -45,6 +47,16 @@ export interface ISceneExplorerService extends IService<typeof SceneExplorerServ
      * Optional drag-drop provider. Set to `undefined` to disable drag-drop entirely.
      */
     dragDropProvider: DragDropProvider<EntityBase, unknown> | undefined;
+
+    /**
+     * Whether the scene explorer is currently sorted alphabetically.
+     */
+    readonly isSorted: boolean;
+
+    /**
+     * Observable that fires when the sorted state changes.
+     */
+    readonly onIsSortedChanged: IReadonlyObservable<boolean>;
 }
 
 /**
@@ -62,6 +74,18 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
         let dragDropProviderOverride: DragDropProvider<EntityBase, unknown> | undefined = undefined;
         const dragDropProviderObservable = new Observable<void>();
 
+        // Initialize isSorted from localStorage
+        let isSortedValue = false;
+        try {
+            const stored = localStorage.getItem(IsSortedLocalStorageKey);
+            if (stored !== null) {
+                isSortedValue = JSON.parse(stored);
+            }
+        } catch {
+            // Ignore localStorage errors
+        }
+        const isSortedObservable = new Observable<boolean>();
+
         const registration = shellService.addSidePane({
             key: "Scene Explorer",
             title: "Scene Explorer",
@@ -76,6 +100,7 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                 const scene = useObservableState(() => sceneContext.currentScene, sceneContext.currentSceneObservable);
                 const entity = useObservableState(() => selectionService.selectedEntity, selectionService.onSelectedEntityChanged);
                 const dragDropProvider = useObservableState(() => dragDropProviderOverride, dragDropProviderObservable);
+                const isSorted = useObservableState(() => isSortedValue, isSortedObservable);
 
                 return (
                     <>
@@ -88,6 +113,16 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                                 selectedEntity={entity}
                                 setSelectedEntity={(entity) => (selectionService.selectedEntity = entity)}
                                 dragDropProvider={dragDropProvider}
+                                isSorted={isSorted}
+                                setIsSorted={(value) => {
+                                    isSortedValue = value;
+                                    try {
+                                        localStorage.setItem(IsSortedLocalStorageKey, JSON.stringify(value));
+                                    } catch {
+                                        // Ignore localStorage errors
+                                    }
+                                    isSortedObservable.notifyObservers(value);
+                                }}
                             />
                         )}
                     </>
@@ -108,8 +143,13 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                     dragDropProviderObservable.notifyObservers();
                 }
             },
+            get isSorted() {
+                return isSortedValue;
+            },
+            onIsSortedChanged: isSortedObservable,
             dispose: () => {
                 dragDropProviderObservable.clear();
+                isSortedObservable.clear();
                 registration.dispose();
             },
         };
