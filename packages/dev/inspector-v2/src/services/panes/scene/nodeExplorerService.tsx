@@ -1,7 +1,7 @@
 import type { IDisposable, Node, Nullable } from "core/index";
 import type { ServiceDefinition } from "../../../modularity/serviceDefinition";
 
-import { createReparentDragProvider } from "../../../components/scene/dragDropProviders/reparentDragProvider";
+import { createReorderDragProvider } from "../../../components/scene/dragDropProviders/reorderDragProvider";
 import type { IGizmoService } from "../../gizmoService";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISceneExplorerService } from "./sceneExplorerService";
@@ -134,20 +134,8 @@ export const NodeExplorerServiceDefinition: ServiceDefinition<[], [ISceneExplore
             getEntityMovedObservables: () => [nodeMovedObservable],
         });
 
-        // Set the default drag-drop provider for reparenting nodes
-        sceneExplorerService.dragDropProvider = createReparentDragProvider<Node>(
-            (node, parent) => {
-                if (node instanceof TransformNode) {
-                    // setParent preserves the world position/rotation/scale
-                    node.setParent(parent);
-                } else {
-                    // Fallback for non-TransformNode nodes
-                    node.parent = parent;
-                }
-                nodeMovedObservable.notifyObservers(node);
-            },
-            (node, potentialAncestor) => node.isDescendantOf(potentialAncestor)
-        );
+        // Set the default drag-drop provider for reparenting and reordering nodes
+        sceneExplorerService.dragDropProvider = createReorderDragProvider(() => sceneExplorerService.isSorted);
 
         const abstractMeshBoundingBoxCommandRegistration = sceneExplorerService.addEntityCommand({
             predicate: (entity: unknown): entity is AbstractMesh => entity instanceof AbstractMesh && entity.getTotalVertices() > 0,

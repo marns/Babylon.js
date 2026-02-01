@@ -21,15 +21,24 @@ type DropData =
  * - Directly manipulates the internal `_children` array and `rootNodes` array
  * - Updates `_sceneRootNodesIndex` for root-level nodes
  *
+ * @param isSiblingReorderDisabled - Optional function that returns true to disable sibling reordering
+ *        (edge zones) and only allow reparenting. Called on each drag evaluation. Useful when the tree
+ *        is sorted alphabetically, making manual ordering meaningless.
  * @returns A DragDropProvider for Node reparenting and sibling ordering
  *
  * @example
  * ```typescript
- * // Enable sibling reordering via the service
+ * // Enable sibling reordering
  * sceneExplorerService.dragDropProvider = createReorderDragProvider();
+ *
+ * // Disable sibling reordering when sorted alphabetically
+ * sceneExplorerService.dragDropProvider = createReorderDragProvider(
+ *     () => sceneExplorerService.isSorted
+ * );
  * ```
  */
-export function createReorderDragProvider(): DragDropProvider<Node, DropData> {
+export function createReorderDragProvider(isSiblingReorderDisabled?: () => boolean): DragDropProvider<Node, DropData> {
+
     return {
         canDrag: () => true,
 
@@ -37,6 +46,15 @@ export function createReorderDragProvider(): DragDropProvider<Node, DropData> {
             // Cycle detection - can't drop onto self or descendant
             if (target === dragged || target.isDescendantOf(dragged)) {
                 return { canDrop: false };
+            }
+
+            // If sibling reorder is disabled, always reparent
+            if (isSiblingReorderDisabled?.()) {
+                return {
+                    canDrop: true,
+                    visual: { type: "border" },
+                    dropData: { action: "reparent", newParent: target },
+                };
             }
 
             // Calculate relative position within target
@@ -93,6 +111,7 @@ export function createReorderDragProvider(): DragDropProvider<Node, DropData> {
 
                 // Then, reorder within siblings
                 const siblings = getChildrenArray(newParent, dragged);
+
                 if (siblings) {
                     const draggedIndex = siblings.indexOf(dragged);
                     const referenceIndex = siblings.indexOf(referenceNode);

@@ -211,14 +211,20 @@ export function useSceneExplorerDragDrop<T>(): SceneExplorerDragDropResult<T> {
                 const dragged = globalDragState?.entity as T | undefined;
                 const dragProvider = globalDragState?.provider as DragDropProvider<T, unknown> | undefined;
 
-                if (!dragged || !provider || !dragProvider || entity === dragged) {
+                // Must have an active drag with a provider
+                if (!dragged || !dragProvider) {
                     return;
                 }
 
-                // Prevent default to allow drop - MUST be called for onDrop to fire
+                // Always prevent default when dragging - Safari requires this for drop to work
                 e.preventDefault();
                 e.stopPropagation();
                 e.dataTransfer.dropEffect = "move";
+
+                // Can't drop on self or if no provider for this entity
+                if (!provider || entity === dragged) {
+                    return;
+                }
 
                 // Get pointer coordinates
                 const pointerY = e.clientY;
@@ -245,14 +251,15 @@ export function useSceneExplorerDragDrop<T>(): SceneExplorerDragDropResult<T> {
             };
 
             const onDragLeave = (e: React.DragEvent) => {
-                // Only clear visual state if we're actually leaving this element (not entering a child)
-                // Don't clear dropStateRef - that's needed for onDragEnd to complete the drop
-                const relatedTarget = e.relatedTarget as Element | null;
-                if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
-                    if (dropStateRef.current.target === entity) {
-                        setCurrentDropVisual(null);
-                        setCurrentDropTarget(null);
-                    }
+                // Only clear visual state if we're actually leaving this element
+                // Safari has issues with relatedTarget being null, so we use a more robust check
+                const rect = e.currentTarget.getBoundingClientRect();
+                const isOutside =
+                    e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom;
+
+                if (isOutside && dropStateRef.current.target === entity) {
+                    setCurrentDropVisual(null);
+                    setCurrentDropTarget(null);
                 }
             };
 
