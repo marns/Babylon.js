@@ -1,7 +1,7 @@
-import type { IDisposable } from "core/index";
+import type { IDisposable, IReadonlyObservable } from "core/index";
 
 import type { EntityBase, SceneExplorerCommandProvider, SceneExplorerSection } from "../../../components/scene/sceneExplorer";
-import type { DropPosition, SceneExplorerDragDropEvent } from "../../../components/scene/sceneExplorerDragDrop";
+import type { DragDropProvider } from "../../../components/scene/sceneExplorerDragDrop";
 import type { IService, ServiceDefinition } from "../../../modularity/serviceDefinition";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISelectionService } from "../../selectionService";
@@ -16,6 +16,8 @@ import { ObservableCollection } from "../../../misc/observableCollection";
 import { SceneContextIdentity } from "../../sceneContext";
 import { SelectionServiceIdentity } from "../../selectionService";
 import { ShellServiceIdentity } from "../../shellService";
+
+const IsSortedLocalStorageKey = "Babylon.js:Inspector:SceneExplorer:IsSorted";
 
 export const SceneExplorerServiceIdentity = Symbol("SceneExplorer");
 
@@ -42,32 +44,19 @@ export interface ISceneExplorerService extends IService<typeof SceneExplorerServ
     addSectionCommand<T extends string>(command: SceneExplorerCommandProvider<T, "contextMenu">): IDisposable;
 
     /**
-     * Enables or disables drag-to-reparent functionality for Node entities in the scene explorer.
-     * When enabled, users can drag nodes and drop them onto other nodes to change the parent-child relationship.
+     * Optional drag-drop provider. Set to `undefined` to disable drag-drop entirely.
      */
-    enableDragToReparent: boolean;
+    dragDropProvider: DragDropProvider<EntityBase, unknown> | undefined;
 
     /**
-     * Callback invoked when a drag-drop operation occurs.
-     * Consumers can use this to intercept or customize the drop behavior.
-     * Call `event.preventDefault()` to cancel the default reparenting behavior.
+     * Whether the scene explorer is currently sorted alphabetically.
      */
-    onDrop: ((event: SceneExplorerDragDropEvent) => void) | undefined;
+    readonly isSorted: boolean;
 
     /**
-     * Optional callback to determine if a node can be dragged.
-     * Return false to prevent dragging a specific node.
-     * If not set, all nodes are draggable.
+     * Observable that fires when the sorted state changes.
      */
-    canDrag: ((entity: EntityBase) => boolean) | undefined;
-
-    /**
-     * Optional callback to determine if a drop operation is valid.
-     * Return false to prevent dropping the dragged entity onto the target at the given position.
-     * Built-in cycle detection is always applied; this callback adds additional validation.
-     * If not set, all drops that pass cycle detection are allowed.
-     */
-    canDrop: ((draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean) | undefined;
+    readonly onIsSortedChanged: IReadonlyObservable<boolean>;
 }
 
 /**
@@ -82,12 +71,20 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
         const entityCommandsCollection = new ObservableCollection<SceneExplorerCommandProvider<unknown>>();
         const sectionCommandsCollection = new ObservableCollection<SceneExplorerCommandProvider<string, "contextMenu">>();
 
-        let dragToReparentEnabled = true;
-        const dragToReparentObservable = new Observable<void>();
+        let dragDropProviderOverride: DragDropProvider<EntityBase, unknown> | undefined = undefined;
+        const dragDropProviderObservable = new Observable<void>();
 
-        let onDropCallback: ((event: SceneExplorerDragDropEvent) => void) | undefined = undefined;
-        let canDragCallback: ((entity: EntityBase) => boolean) | undefined = undefined;
-        let canDropCallback: ((draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean) | undefined = undefined;
+        // Initialize isSorted from localStorage
+        let isSortedValue = false;
+        try {
+            const stored = localStorage.getItem(IsSortedLocalStorageKey);
+            if (stored !== null) {
+                isSortedValue = JSON.parse(stored);
+            }
+        } catch {
+            // Ignore localStorage errors
+        }
+        const isSortedObservable = new Observable<boolean>();
 
         const registration = shellService.addSidePane({
             key: "Scene Explorer",
@@ -102,7 +99,8 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                 const sectionCommands = useOrderedObservableCollection(sectionCommandsCollection);
                 const scene = useObservableState(() => sceneContext.currentScene, sceneContext.currentSceneObservable);
                 const entity = useObservableState(() => selectionService.selectedEntity, selectionService.onSelectedEntityChanged);
-                const enableDragToReparent = useObservableState(() => dragToReparentEnabled, dragToReparentObservable);
+                const dragDropProvider = useObservableState(() => dragDropProviderOverride, dragDropProviderObservable);
+                const isSorted = useObservableState(() => isSortedValue, isSortedObservable);
 
                 return (
                     <>
@@ -114,10 +112,17 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
                                 scene={scene}
                                 selectedEntity={entity}
                                 setSelectedEntity={(entity) => (selectionService.selectedEntity = entity)}
-                                enableDragToReparent={enableDragToReparent}
-                                onDrop={onDropCallback}
-                                canDrag={canDragCallback}
-                                canDrop={canDropCallback}
+                                dragDropProvider={dragDropProvider}
+                                isSorted={isSorted}
+                                setIsSorted={(value) => {
+                                    isSortedValue = value;
+                                    try {
+                                        localStorage.setItem(IsSortedLocalStorageKey, JSON.stringify(value));
+                                    } catch {
+                                        // Ignore localStorage errors
+                                    }
+                                    isSortedObservable.notifyObservers(value);
+                                }}
                             />
                         )}
                     </>
@@ -129,35 +134,22 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
             addSection: (section) => sectionsCollection.add(section as SceneExplorerSection<unknown>),
             addEntityCommand: (command) => entityCommandsCollection.add(command as SceneExplorerCommandProvider<unknown>),
             addSectionCommand: (command) => sectionCommandsCollection.add(command as unknown as SceneExplorerCommandProvider<string, "contextMenu">),
-            get enableDragToReparent() {
-                return dragToReparentEnabled;
+            get dragDropProvider() {
+                return dragDropProviderOverride;
             },
-            set enableDragToReparent(value: boolean) {
-                if (dragToReparentEnabled !== value) {
-                    dragToReparentEnabled = value;
-                    dragToReparentObservable.notifyObservers();
+            set dragDropProvider(value: DragDropProvider<EntityBase, unknown> | undefined) {
+                if (dragDropProviderOverride !== value) {
+                    dragDropProviderOverride = value;
+                    dragDropProviderObservable.notifyObservers();
                 }
             },
-            get onDrop() {
-                return onDropCallback;
+            get isSorted() {
+                return isSortedValue;
             },
-            set onDrop(value: ((event: SceneExplorerDragDropEvent) => void) | undefined) {
-                onDropCallback = value;
-            },
-            get canDrag() {
-                return canDragCallback;
-            },
-            set canDrag(value: ((entity: EntityBase) => boolean) | undefined) {
-                canDragCallback = value;
-            },
-            get canDrop() {
-                return canDropCallback;
-            },
-            set canDrop(value: ((draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean) | undefined) {
-                canDropCallback = value;
-            },
+            onIsSortedChanged: isSortedObservable,
             dispose: () => {
-                dragToReparentObservable.clear();
+                dragDropProviderObservable.clear();
+                isSortedObservable.clear();
                 registration.dispose();
             },
         };

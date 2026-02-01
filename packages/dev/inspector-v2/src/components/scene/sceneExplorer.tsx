@@ -4,9 +4,8 @@ import type { FluentIcon } from "@fluentui/react-icons";
 import type { ComponentType, FunctionComponent } from "react";
 
 import type { IDisposable, IReadonlyObservable, Nullable, Scene } from "core/index";
-import type { DragDropConfig, DropPosition, SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
+import type { DragDropProvider, DropVisual } from "./sceneExplorerDragDrop";
 
-import { DndContext, DragOverlay, useDraggable, useDroppable } from "@dnd-kit/core";
 import { VirtualizerScrollView } from "@fluentui-contrib/react-virtualizer";
 import {
     Body1,
@@ -31,8 +30,7 @@ import {
 } from "@fluentui/react-components";
 import { ArrowCollapseAllRegular, ArrowExpandAllRegular, createFluentIcon, FilterRegular, GlobeRegular, TextSortAscendingRegular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocalStorage } from "usehooks-ts";
-import { useDragSensors, useSceneExplorerDragDrop } from "./sceneExplorerDragDrop";
+import { useSceneExplorerDragDrop } from "./sceneExplorerDragDrop";
 
 import { UniqueIdGenerator } from "core/Misc/uniqueIdGenerator";
 import { ToggleButton } from "shared-ui-components/fluent/primitives/toggleButton";
@@ -128,12 +126,6 @@ export type SceneExplorerSection<T> = Readonly<{
      * A function that returns an array of observables for when entities are moved (e.g. re-parented) within the scene.
      */
     getEntityMovedObservables?: () => readonly IReadonlyObservable<T>[];
-
-    /**
-     * Optional drag-drop configuration for this section.
-     * If not provided, drag-drop is disabled for entities in this section.
-     */
-    dragDropConfig?: DragDropConfig<T>;
 }>;
 
 type InlineCommand = {
@@ -231,25 +223,9 @@ type EntityTreeItemData = {
     children?: EntityTreeItemData[];
     icon?: ComponentType<{ entity: unknown }>;
     getDisplayInfo: () => EntityDisplayInfo;
-    dragDropConfig?: DragDropConfig<unknown>;
 };
 
 type TreeItemData = SceneTreeItemData | SectionTreeItemData | EntityTreeItemData;
-
-function GetEntityName(allTreeItems: Map<TreeItemValue, SectionTreeItemData | EntityTreeItemData>, entity: EntityBase): string {
-    const item = allTreeItems.get(GetEntityId(entity));
-    let name = "";
-    if (item) {
-        if (item.type === "entity") {
-            const displayInfo = item.getDisplayInfo();
-            name = displayInfo.name;
-            displayInfo.dispose?.();
-        } else {
-            name = item.sectionName;
-        }
-    }
-    return name;
-}
 
 function ExpandOrCollapseAll(treeItem: SectionTreeItemData | EntityTreeItemData, open: boolean, openItems: Set<TreeItemValue>) {
     const addOrRemove = open ? openItems.add.bind(openItems) : openItems.delete.bind(openItems);
@@ -415,11 +391,20 @@ const useStyles = makeStyles({
     },
 });
 
-const DropPositionClasses = {
-    inside: "treeItemDropTargetInside",
-    before: "treeItemDropTargetBefore",
-    after: "treeItemDropTargetAfter",
-} as const satisfies Record<DropPosition, keyof ReturnType<typeof useStyles>>;
+/**
+ * Get the CSS class name for a DropVisual.
+ */
+function getDropVisualClass(visual: DropVisual | null, classes: ReturnType<typeof useStyles>): string | undefined {
+    if (!visual) return undefined;
+    switch (visual.type) {
+        case "border":
+            return classes.treeItemDropTargetInside;
+        case "edge":
+            return visual.edge === "top" ? classes.treeItemDropTargetBefore : classes.treeItemDropTargetAfter;
+        case "none":
+            return undefined;
+    }
+}
 
 const ActionCommand: FunctionComponent<{ command: SceneExplorerCommand<"inline", "action"> }> = (props) => {
     const { command } = props;
@@ -587,47 +572,24 @@ const EntityTreeItem: FunctionComponent<{
     commandProviders: readonly SceneExplorerCommandProvider<EntityBase>[];
     expandAll: () => void;
     collapseAll: () => void;
-    enableDragToReparent?: boolean;
-    dropPosition: DropPosition | null;
+    dropVisual: DropVisual | null;
+    isDragging: boolean;
+    dragProps: {
+        draggable: boolean;
+        onDragStart: (e: React.DragEvent) => void;
+        onDragEnd: (e: React.DragEvent) => void;
+        onDragOver: (e: React.DragEvent) => void;
+        onDragLeave: (e: React.DragEvent) => void;
+        onDrop: (e: React.DragEvent) => void;
+    };
 }> = (props) => {
-    const { entityItem, isSelected, select, isFiltering, commandProviders, expandAll, collapseAll, enableDragToReparent, dropPosition } = props;
+    const { entityItem, isSelected, select, isFiltering, commandProviders, expandAll, collapseAll, dropVisual, isDragging, dragProps } = props;
 
     const classes = useStyles();
     const [compactMode] = useCompactMode();
 
     const entityId = GetEntityId(entityItem.entity);
-    const { dragDropConfig } = entityItem;
     const hasChildren = !!entityItem.children?.length;
-    // Only check if drag-drop is structurally enabled; actual canDrag validation happens in onDragStart
-    const isDragEnabled = enableDragToReparent && !!dragDropConfig;
-
-    // dnd-kit draggable hook
-    const {
-        attributes,
-        listeners,
-        setNodeRef: setDragRef,
-        isDragging,
-    } = useDraggable({
-        id: entityId,
-        data: { entity: entityItem.entity, dragDropConfig },
-        disabled: !isDragEnabled,
-    });
-
-    // dnd-kit droppable hook
-    const { setNodeRef: setDropRef } = useDroppable({
-        id: entityId,
-        data: { entity: entityItem.entity, dragDropConfig },
-        disabled: !enableDragToReparent || !dragDropConfig,
-    });
-
-    // Combine refs for both draggable and droppable
-    const setNodeRef = useCallback(
-        (node: HTMLDivElement | null) => {
-            setDragRef(node);
-            setDropRef(node);
-        },
-        [setDragRef, setDropRef]
-    );
 
     const displayInfo = useResource(
         useCallback(() => {
@@ -726,31 +688,38 @@ const EntityTreeItem: FunctionComponent<{
 
     const [checkedContextMenuItems, onContextMenuCheckedValueChange, contextMenuItems] = useCommandContextMenuState(contextMenuCommands);
 
+    // Wrap in a div to handle drag events - Fluent UI's FlatTreeItem doesn't reliably forward
+    // onDrop events in all browsers (works in Safari but not Chrome)
     return (
-        <Menu openOnContext checkedValues={checkedContextMenuItems} onCheckedValueChange={onContextMenuCheckedValueChange}>
-            <MenuTrigger disableButtonEnhancement>
-                <FlatTreeItem
-                    ref={setNodeRef}
-                    className={mergeClasses(classes.treeItem, isDragging && classes.treeItemDragging, dropPosition ? classes[DropPositionClasses[dropPosition]] : undefined)}
-                    key={entityId}
-                    value={entityId}
-                    // Disable manual expand/collapse when a filter is active.
-                    itemType={!isFiltering && hasChildren ? "branch" : "leaf"}
-                    parentValue={entityItem.parent.type === "section" ? entityItem.parent.sectionName : GetEntityId(entityItem.parent.entity)}
-                    aria-level={entityItem.depth}
-                    aria-setsize={1}
-                    aria-posinset={1}
-                    onClick={select}
-                    style={{ [treeItemLevelToken]: entityItem.depth }}
-                    {...listeners}
-                    {...attributes}
-                >
+        <div
+            draggable={dragProps.draggable}
+            onDragStart={dragProps.onDragStart}
+            onDragEnd={dragProps.onDragEnd}
+            onDragOver={dragProps.onDragOver}
+            onDragLeave={dragProps.onDragLeave}
+            onDrop={dragProps.onDrop}
+        >
+            <Menu openOnContext checkedValues={checkedContextMenuItems} onCheckedValueChange={onContextMenuCheckedValueChange}>
+                <MenuTrigger disableButtonEnhancement>
+                    <FlatTreeItem
+                        className={mergeClasses(classes.treeItem, isDragging && classes.treeItemDragging, getDropVisualClass(dropVisual, classes))}
+                        key={entityId}
+                        value={entityId}
+                        // Disable manual expand/collapse when a filter is active.
+                        itemType={!isFiltering && hasChildren ? "branch" : "leaf"}
+                        parentValue={entityItem.parent.type === "section" ? entityItem.parent.sectionName : GetEntityId(entityItem.parent.entity)}
+                        aria-level={entityItem.depth}
+                        aria-setsize={1}
+                        aria-posinset={1}
+                        onClick={select}
+                        style={{ [treeItemLevelToken]: entityItem.depth }}
+                    >
                     <TreeItemLayout
                         iconBefore={entityItem.icon ? <entityItem.icon entity={entityItem.entity} /> : null}
                         className={mergeClasses(
                             hasChildren ? classes.treeItemLayoutBranch : classes.treeItemLayoutLeaf,
                             compactMode ? classes.treeItemLayoutCompact : undefined,
-                            dropPosition ? classes[DropPositionClasses[dropPosition]] : undefined
+                            getDropVisualClass(dropVisual, classes)
                         )}
                         style={isSelected ? { backgroundColor: tokens.colorNeutralBackground1Selected } : undefined}
                         actions={actions}
@@ -787,6 +756,7 @@ const EntityTreeItem: FunctionComponent<{
                 </MenuList>
             </MenuPopover>
         </Menu>
+        </div>
     );
 };
 
@@ -797,14 +767,16 @@ export const SceneExplorer: FunctionComponent<{
     scene: Scene;
     selectedEntity?: unknown;
     setSelectedEntity?: (entity: unknown) => void;
-    enableDragToReparent?: boolean;
-    onDrop?: (event: SceneExplorerDragDropEvent) => void;
-    canDrag?: (entity: EntityBase) => boolean;
-    canDrop?: (draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean;
+    /** Optional drag-drop provider. When set, enables drag-drop with the specified behavior. */
+    dragDropProvider?: DragDropProvider<EntityBase, unknown>;
+    /** Whether to sort entities alphabetically. */
+    isSorted: boolean;
+    /** Callback to change the sorted state. */
+    setIsSorted: (value: boolean) => void;
 }> = (props) => {
     const classes = useStyles();
 
-    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, enableDragToReparent, onDrop, canDrag, canDrop } = props;
+    const { sections, entityCommandProviders, sectionCommandProviders, scene, selectedEntity, dragDropProvider, isSorted, setIsSorted } = props;
 
     const [openItems, setOpenItems] = useState(new Set<TreeItemValue>());
     const [sceneVersion, setSceneVersion] = useState(0);
@@ -818,7 +790,6 @@ export const SceneExplorer: FunctionComponent<{
     };
 
     const [itemsFilter, setItemsFilter] = useState("");
-    const [isSorted, setIsSorted] = useLocalStorage("Babylon/Settings/SceneExplorer/IsSorted", false);
 
     useEffect(() => {
         setSceneVersion((version) => version + 1);
@@ -883,6 +854,7 @@ export const SceneExplorer: FunctionComponent<{
             allTreeItems.set(sectionTreeItem.sectionName, sectionTreeItem);
 
             let depth = 2;
+
             const createEntityTreeItemData = (entity: EntityBase, parent: SectionTreeItemData | EntityTreeItemData) => {
                 const treeItemData = {
                     type: "entity",
@@ -891,7 +863,6 @@ export const SceneExplorer: FunctionComponent<{
                     parent,
                     icon: section.entityIcon,
                     getDisplayInfo: () => section.getEntityDisplayInfo(entity),
-                    dragDropConfig: section.dragDropConfig as DragDropConfig<unknown> | undefined,
                 } as const satisfies EntityTreeItemData;
 
                 if (!parent.children) {
@@ -929,16 +900,8 @@ export const SceneExplorer: FunctionComponent<{
         return [sceneTreeItem, sectionTreeItems, allTreeItems] as const;
     }, [scene, sceneVersion, sections]);
 
-    // Drag-drop hooks - sensors and state/handlers for DndContext
-    const sensors = useDragSensors();
-    const { draggedEntity, currentDropPosition, currentDropTarget, lastDropResult, onDragStart, onDragMove, onDragEnd, onDragCancel } =
-        useSceneExplorerDragDrop<EntityBase>({
-            allTreeItems,
-            openItems,
-            onDrop,
-            canDrag,
-            canDrop,
-        });
+    // Drag-drop hook - state and helper for vanilla HTML5 drag/drop
+    const { draggedEntity, currentDropVisual, currentDropTarget, lastDropResult, createDragProps } = useSceneExplorerDragDrop<EntityBase>();
 
     // Handle UI updates after a successful drop
     useEffect(() => {
@@ -946,8 +909,9 @@ export const SceneExplorer: FunctionComponent<{
             // Notify that the entity was reparented so the tree can refresh
             setSceneVersion((v) => v + 1);
 
-            // Expand the target node when dropping inside so the user can see the dropped item
-            if (lastDropResult.dropPosition === "inside") {
+            // Expand the target node when it becomes the new parent so the user can see the dropped item
+            // We expand if the target was shown with a border visual (indicating reparent-under-target)
+            if (lastDropResult.dropVisual.type === "border") {
                 openItems.add(GetEntityId(lastDropResult.targetEntity));
                 setOpenItems(new Set(openItems));
             }
@@ -1124,85 +1088,79 @@ export const SceneExplorer: FunctionComponent<{
     };
 
     return (
-        <DndContext sensors={sensors} onDragStart={onDragStart} onDragMove={onDragMove} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
-            <div className={classes.rootDiv}>
-                <div className={classes.toolbarDiv}>
-                    <SearchBox
-                        className={classes.searchBox}
-                        appearance="underline"
-                        contentBefore={<FilterRegular />}
-                        placeholder="Filter"
-                        value={itemsFilter}
-                        onChange={(_, data) => setItemsFilter(data.value)}
-                    />
-                    <ToggleButton
-                        title="Sort Entities Alphabetically"
-                        appearance="transparent"
-                        checkedIcon={TextSortAscendingRegular}
-                        value={isSorted}
-                        onChange={() => setIsSorted((isSorted) => !isSorted)}
-                    />
-                </div>
-                <FlatTree className={classes.tree} openItems={openItems} onOpenChange={onOpenChange} aria-label="Scene Explorer Tree">
-                    <VirtualizerScrollView imperativeRef={scrollViewRef} numItems={visibleItems.length} itemSize={32} container={{ className: classes.scrollView }}>
-                        {(index: number) => {
-                            const item = visibleItems[index];
-
-                            if (item.type === "scene") {
-                                return (
-                                    <SceneTreeItem
-                                        key="scene"
-                                        scene={scene}
-                                        isSelected={selectedEntity === scene}
-                                        select={() => setSelectedEntity?.(scene)}
-                                        isFiltering={!!itemsFilter}
-                                    />
-                                );
-                            } else if (item.type === "section") {
-                                return (
-                                    <SectionTreeItem
-                                        key={item.sectionName}
-                                        scene={scene}
-                                        section={item}
-                                        isFiltering={!!itemsFilter}
-                                        commandProviders={sectionCommandProviders}
-                                        expandAll={() => expandAll(item)}
-                                        collapseAll={() => collapseAll(item)}
-                                    />
-                                );
-                            } else {
-                                return (
-                                    <EntityTreeItem
-                                        key={item.entity.uniqueId}
-                                        scene={scene}
-                                        entityItem={item}
-                                        isSelected={selectedEntity === item.entity}
-                                        select={() => setSelectedEntity?.(item.entity)}
-                                        isFiltering={!!itemsFilter}
-                                        commandProviders={entityCommandProviders as SceneExplorerCommandProvider<EntityBase>[]}
-                                        expandAll={() => expandAll(item)}
-                                        collapseAll={() => collapseAll(item)}
-                                        enableDragToReparent={enableDragToReparent}
-                                        dropPosition={currentDropTarget === item.entity ? currentDropPosition : null}
-                                    />
-                                );
-                            }
-                        }}
-                    </VirtualizerScrollView>
-                </FlatTree>
+        <div className={classes.rootDiv}>
+            <div className={classes.toolbarDiv}>
+                <SearchBox
+                    className={classes.searchBox}
+                    appearance="underline"
+                    contentBefore={<FilterRegular />}
+                    placeholder="Filter"
+                    value={itemsFilter}
+                    onChange={(_, data) => setItemsFilter(data.value)}
+                />
+                <ToggleButton
+                    title="Sort Entities Alphabetically"
+                    appearance="transparent"
+                    checkedIcon={TextSortAscendingRegular}
+                    value={isSorted}
+                    onChange={setIsSorted}
+                />
             </div>
-            <DragOverlay dropAnimation={null}>
-                {draggedEntity ? (
-                    <Body1
-                        style={{
-                            opacity: 0.9,
-                            textShadow: `0 1px 2px ${tokens.colorNeutralBackground1}, 0 0 4px ${tokens.colorNeutralBackground1}`,
-                        }}
-                    >
-                        {GetEntityName(allTreeItems, draggedEntity)}
-                    </Body1>
-                ) : null}
-            </DragOverlay>
-        </DndContext>
+            <FlatTree className={classes.tree} openItems={openItems} onOpenChange={onOpenChange} aria-label="Scene Explorer Tree">
+                <VirtualizerScrollView imperativeRef={scrollViewRef} numItems={visibleItems.length} itemSize={32} container={{ className: classes.scrollView }}>
+                    {(index: number) => {
+                        const item = visibleItems[index];
+
+                        if (item.type === "scene") {
+                            return (
+                                <SceneTreeItem
+                                    key="scene"
+                                    scene={scene}
+                                    isSelected={selectedEntity === scene}
+                                    select={() => setSelectedEntity?.(scene)}
+                                    isFiltering={!!itemsFilter}
+                                />
+                            );
+                        } else if (item.type === "section") {
+                            return (
+                                <SectionTreeItem
+                                    key={item.sectionName}
+                                    scene={scene}
+                                    section={item}
+                                    isFiltering={!!itemsFilter}
+                                    commandProviders={sectionCommandProviders}
+                                    expandAll={() => expandAll(item)}
+                                    collapseAll={() => collapseAll(item)}
+                                />
+                            );
+                        } else {
+                            const getName = () => {
+                                const displayInfo = item.getDisplayInfo();
+                                const name = displayInfo.name;
+                                displayInfo.dispose?.();
+                                return name;
+                            };
+                            const dragProps = createDragProps(item.entity, dragDropProvider, getName);
+                            return (
+                                <EntityTreeItem
+                                    key={item.entity.uniqueId}
+                                    scene={scene}
+                                    entityItem={item}
+                                    isSelected={selectedEntity === item.entity}
+                                    select={() => setSelectedEntity?.(item.entity)}
+                                    isFiltering={!!itemsFilter}
+                                    commandProviders={entityCommandProviders as SceneExplorerCommandProvider<EntityBase>[]}
+                                    expandAll={() => expandAll(item)}
+                                    collapseAll={() => collapseAll(item)}
+                                    dropVisual={currentDropTarget === item.entity ? currentDropVisual : null}
+                                    isDragging={draggedEntity === item.entity}
+                                    dragProps={dragProps}
+                                />
+                            );
+                        }
+                    }}
+                </VirtualizerScrollView>
+            </FlatTree>
+        </div>
     );
 };
