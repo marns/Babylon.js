@@ -1,7 +1,7 @@
 import type { IDisposable } from "core/index";
 
 import type { EntityBase, SceneExplorerCommandProvider, SceneExplorerSection } from "../../../components/scene/sceneExplorer";
-import type { DropPosition, SceneExplorerDropEvent } from "../../../components/scene/sceneExplorerDragDrop";
+import type { DropPosition, SceneExplorerDragDropEvent } from "../../../components/scene/sceneExplorerDragDrop";
 import type { IService, ServiceDefinition } from "../../../modularity/serviceDefinition";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISelectionService } from "../../selectionService";
@@ -52,7 +52,7 @@ export interface ISceneExplorerService extends IService<typeof SceneExplorerServ
      * Consumers can use this to intercept or customize the drop behavior.
      * Call `event.preventDefault()` to cancel the default reparenting behavior.
      */
-    onDrop: ((event: SceneExplorerDropEvent) => void) | undefined;
+    onDrop: ((event: SceneExplorerDragDropEvent) => void) | undefined;
 
     /**
      * Optional callback to determine if a node can be dragged.
@@ -85,7 +85,7 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
         let dragToReparentEnabled = true;
         const dragToReparentObservable = new Observable<void>();
 
-        let onDropCallback: ((event: SceneExplorerDropEvent) => void) | undefined = undefined;
+        let onDropCallback: ((event: SceneExplorerDragDropEvent) => void) | undefined = undefined;
         let canDragCallback: ((entity: EntityBase) => boolean) | undefined = undefined;
         let canDropCallback: ((draggedEntity: EntityBase, targetEntity: EntityBase, dropPosition: DropPosition) => boolean) | undefined = undefined;
 
@@ -141,7 +141,7 @@ export const SceneExplorerServiceDefinition: ServiceDefinition<[ISceneExplorerSe
             get onDrop() {
                 return onDropCallback;
             },
-            set onDrop(value: ((event: SceneExplorerDropEvent) => void) | undefined) {
+            set onDrop(value: ((event: SceneExplorerDragDropEvent) => void) | undefined) {
                 onDropCallback = value;
             },
             get canDrag() {
