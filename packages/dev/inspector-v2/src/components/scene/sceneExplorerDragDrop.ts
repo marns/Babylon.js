@@ -1,10 +1,6 @@
 import type { Nullable } from "core/index";
 
-import type { DragEndEvent, DragMoveEvent, DragStartEvent } from "@dnd-kit/core";
-
-import { PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { useCallback, useRef, useState } from "react";
-
 
 // =============================================================================
 // Provider-based drag-drop types
@@ -115,25 +111,32 @@ type SceneExplorerDragDropResult<T> = {
     /** Set after a successful drop (not prevented). Reset to null on next drag start. */
     lastDropResult: Nullable<DropResult<T>>;
 
-    // Event handlers for DndContext
-    onDragStart: (event: DragStartEvent) => void;
-    onDragMove: (event: DragMoveEvent) => void;
-    onDragEnd: (event: DragEndEvent) => void;
-    onDragCancel: () => void;
+    // Helper to create drag props for an element
+    createDragProps: (
+        entity: T,
+        provider: DragDropProvider<T, unknown> | undefined,
+        getName: () => string
+    ) => {
+        draggable: boolean;
+        onDragStart: (e: React.DragEvent) => void;
+        onDragEnd: (e: React.DragEvent) => void;
+        onDragOver: (e: React.DragEvent) => void;
+        onDragLeave: (e: React.DragEvent) => void;
+        onDrop: (e: React.DragEvent) => void;
+    };
 };
 
-/**
- * Hook that returns dnd-kit sensors configured for the scene explorer.
- * Uses a 5px distance constraint to prevent accidental drags on click.
- * @returns DndContext sensors
- */
-export function useDragSensors() {
-    return useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
-}
+// Global drag state - used to pass entity data between drag events
+// HTML5 drag/drop doesn't allow reading dataTransfer in dragover events
+let globalDragState: {
+    entity: unknown;
+    provider: DragDropProvider<unknown, unknown> | undefined;
+} | null = null;
 
 /**
  * Hook that encapsulates all drag-drop state and logic for the scene explorer.
- * @returns state for rendering and event handlers for DndContext.
+ * Uses vanilla HTML5 drag and drop APIs.
+ * @returns state for rendering and helper to create drag props.
  */
 export function useSceneExplorerDragDrop<T>(): SceneExplorerDragDropResult<T> {
     // Drag state for rendering
@@ -152,108 +155,144 @@ export function useSceneExplorerDragDrop<T>(): SceneExplorerDragDropResult<T> {
         dropStateRef.current = { target: null, visual: null, dropData: null, draggedEntity: null, provider: null };
     }, []);
 
-    const onDragStart = useCallback(
-        (event: DragStartEvent) => {
-            const entity = event.active.data.current?.entity as T | undefined;
-            if (!entity) {
-                return;
-            }
+    const createDragProps = useCallback(
+        (entity: T, provider: DragDropProvider<T, unknown> | undefined, getName: () => string) => {
+            const onDragStart = (e: React.DragEvent) => {
+                // Check provider-level canDrag
+                const providerCanDrag = provider?.canDrag(entity) ?? true;
+                if (!providerCanDrag || !provider) {
+                    e.preventDefault();
+                    return;
+                }
 
-            // Clear previous drop result when starting a new drag
-            setLastDropResult(null);
+                // Clear previous drop result when starting a new drag
+                setLastDropResult(null);
 
-            // Check provider-level canDrag
-            const provider = event.active.data.current?.provider as DragDropProvider<T, unknown> | undefined;
-            const providerCanDrag = provider?.canDrag(entity) ?? true;
+                // Store entity in global state (dataTransfer is write-only during dragover)
+                globalDragState = { entity, provider: provider as DragDropProvider<unknown, unknown> };
 
-            if (providerCanDrag) {
                 setDraggedEntity(entity);
                 dropStateRef.current.draggedEntity = entity;
-            }
-            // If canDrag returns false, we don't set draggedEntity, effectively canceling the drag
-        },
-        []
-    );
 
-    const onDragMove = useCallback(
-        (event: DragMoveEvent) => {
-            const { over, activatorEvent } = event;
-            const dragged = dropStateRef.current.draggedEntity;
+                // Set drag data and image
+                e.dataTransfer.effectAllowed = "move";
+                e.dataTransfer.setData("text/plain", getName());
 
-            const clearDropState = () => {
-                setCurrentDropVisual(null);
-                setCurrentDropTarget(null);
-                dropStateRef.current.visual = null;
-                dropStateRef.current.dropData = null;
-                dropStateRef.current.target = null;
-                dropStateRef.current.provider = null;
+                // Create a custom drag image
+                const dragImage = document.createElement("div");
+                dragImage.textContent = getName();
+                dragImage.style.cssText = `
+                    position: absolute;
+                    top: -1000px;
+                    left: -1000px;
+                    padding: 4px 8px;
+                    background: var(--colorNeutralBackground1, #fff);
+                    border-radius: 4px;
+                    font-family: inherit;
+                    font-size: inherit;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                    pointer-events: none;
+                    white-space: nowrap;
+                `;
+                document.body.appendChild(dragImage);
+                e.dataTransfer.setDragImage(dragImage, 0, 0);
+
+                // Clean up the drag image element after a short delay
+                setTimeout(() => document.body.removeChild(dragImage), 0);
             };
 
-            if (!over || !dragged) {
-                clearDropState();
-                return;
-            }
+            const onDragEnd = () => {
+                // Clean up - the actual drop is handled in onDrop for immediate feedback
+                globalDragState = null;
+                resetState();
+            };
 
-            const targetEntity = over.data.current?.entity as T | undefined;
-            const provider = over.data.current?.provider as DragDropProvider<T, unknown> | undefined;
+            const onDragOver = (e: React.DragEvent) => {
+                const dragged = globalDragState?.entity as T | undefined;
+                const dragProvider = globalDragState?.provider as DragDropProvider<T, unknown> | undefined;
 
-            if (!targetEntity || !provider || targetEntity === dragged) {
-                clearDropState();
-                return;
-            }
+                if (!dragged || !provider || !dragProvider || entity === dragged) {
+                    return;
+                }
 
-            // Get pointer coordinates from the activator event
-            const pointerEvent = activatorEvent as PointerEvent | MouseEvent | TouchEvent;
-            let clientY: number;
-            if ("clientY" in pointerEvent) {
-                clientY = pointerEvent.clientY;
-            } else if ("touches" in pointerEvent && pointerEvent.touches.length > 0) {
-                clientY = pointerEvent.touches[0].clientY;
-            } else {
-                return;
-            }
+                // Prevent default to allow drop - MUST be called for onDrop to fire
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = "move";
 
-            // Calculate current pointer position using delta from drag start
-            const currentY = clientY + event.delta.y;
-            const overRect = over.rect as unknown as DOMRect;
+                // Get pointer coordinates
+                const pointerY = e.clientY;
+                const targetRect = e.currentTarget.getBoundingClientRect();
 
-            // Ask the provider to evaluate this drop
-            const evaluation = provider.evaluateDrop(dragged, targetEntity, currentY, overRect);
+                // Ask the provider to evaluate this drop
+                const evaluation = dragProvider.evaluateDrop(dragged, entity, pointerY, targetRect);
 
-            if (evaluation.canDrop) {
-                setCurrentDropVisual(evaluation.visual);
-                setCurrentDropTarget(targetEntity);
-                dropStateRef.current.visual = evaluation.visual;
-                dropStateRef.current.dropData = evaluation.dropData;
-                dropStateRef.current.target = targetEntity;
-                dropStateRef.current.provider = provider;
-            } else {
-                clearDropState();
-            }
+                if (evaluation.canDrop) {
+                    setCurrentDropVisual(evaluation.visual);
+                    setCurrentDropTarget(entity);
+                    dropStateRef.current.visual = evaluation.visual;
+                    dropStateRef.current.dropData = evaluation.dropData;
+                    dropStateRef.current.target = entity;
+                    dropStateRef.current.provider = dragProvider;
+                } else {
+                    setCurrentDropVisual(null);
+                    setCurrentDropTarget(null);
+                    dropStateRef.current.visual = null;
+                    dropStateRef.current.dropData = null;
+                    dropStateRef.current.target = null;
+                    dropStateRef.current.provider = null;
+                }
+            };
+
+            const onDragLeave = (e: React.DragEvent) => {
+                // Only clear visual state if we're actually leaving this element (not entering a child)
+                // Don't clear dropStateRef - that's needed for onDragEnd to complete the drop
+                const relatedTarget = e.relatedTarget as Element | null;
+                if (!relatedTarget || !e.currentTarget.contains(relatedTarget)) {
+                    if (dropStateRef.current.target === entity) {
+                        setCurrentDropVisual(null);
+                        setCurrentDropTarget(null);
+                    }
+                }
+            };
+
+            const onDrop = (e: React.DragEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                // Perform the drop immediately for responsive feedback
+                const { target, visual, dropData, draggedEntity: droppedEntity, provider: dropProvider } = dropStateRef.current;
+
+                if (target && visual && dropData !== null && droppedEntity && dropProvider) {
+                    dropProvider.onDrop(droppedEntity, target, dropData);
+                    setLastDropResult({ draggedEntity: droppedEntity, targetEntity: target, dropVisual: visual });
+                }
+
+                // Clear all state immediately - don't wait for onDragEnd
+                globalDragState = null;
+                dropStateRef.current = { target: null, visual: null, dropData: null, draggedEntity: null, provider: null };
+                setDraggedEntity(null);
+                setCurrentDropVisual(null);
+                setCurrentDropTarget(null);
+            };
+
+            return {
+                draggable: !!provider,
+                onDragStart,
+                onDragEnd,
+                onDragOver,
+                onDragLeave,
+                onDrop,
+            };
         },
-        []
+        [resetState]
     );
-
-    const onDragEnd = useCallback(() => {
-        const { target, visual, dropData, draggedEntity: droppedEntity, provider } = dropStateRef.current;
-
-        if (target && visual && dropData !== null && droppedEntity && provider) {
-            // Perform the drop
-            provider.onDrop(droppedEntity, target, dropData);
-            setLastDropResult({ draggedEntity: droppedEntity, targetEntity: target, dropVisual: visual });
-        }
-
-        resetState();
-    }, [resetState]);
 
     return {
         draggedEntity,
         currentDropVisual,
         currentDropTarget,
         lastDropResult,
-        onDragStart,
-        onDragMove,
-        onDragEnd,
-        onDragCancel: resetState,
+        createDragProps,
     };
 }
