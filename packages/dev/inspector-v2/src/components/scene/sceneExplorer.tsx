@@ -4,10 +4,9 @@ import type { FluentIcon } from "@fluentui/react-icons";
 import type { ComponentType, FunctionComponent } from "react";
 
 import type { IDisposable, IReadonlyObservable, Nullable, Scene } from "core/index";
+import type { DragDropConfig, DropPosition, SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
 
 import { DndContext, DragOverlay, useDraggable, useDroppable } from "@dnd-kit/core";
-import { useSceneExplorerDragDrop, useDragSensors, type DragDropConfig, type DropPosition, type SceneExplorerDragDropEvent } from "./sceneExplorerDragDrop";
-
 import { VirtualizerScrollView } from "@fluentui-contrib/react-virtualizer";
 import {
     Body1,
@@ -33,6 +32,7 @@ import {
 import { ArrowCollapseAllRegular, ArrowExpandAllRegular, createFluentIcon, FilterRegular, GlobeRegular, TextSortAscendingRegular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocalStorage } from "usehooks-ts";
+import { useDragSensors, useSceneExplorerDragDrop } from "./sceneExplorerDragDrop";
 
 import { UniqueIdGenerator } from "core/Misc/uniqueIdGenerator";
 import { ToggleButton } from "shared-ui-components/fluent/primitives/toggleButton";
@@ -42,7 +42,7 @@ import { useResource } from "../../hooks/resourceHooks";
 import { useCompactMode } from "../../hooks/settingsHooks";
 import { TraverseGraph } from "../../misc/graphUtils";
 
-export type EntityBase = Readonly<{
+type EntityBase = Readonly<{
     uniqueId?: number;
     reservedDataStore?: Record<PropertyKey, unknown>;
 }>;
@@ -52,6 +52,8 @@ const SyntheticUniqueIds = new WeakMap<EntityBase, number>();
 /**
  * Gets a unique ID for an entity. Uses the entity's uniqueId if available,
  * otherwise generates and caches a synthetic ID.
+ * @param entity The entity to get the ID for.
+ * @returns The unique ID for the entity.
  */
 export function GetEntityId(entity: EntityBase): number {
     if (entity.uniqueId !== undefined) {
@@ -237,9 +239,19 @@ type EntityTreeItemData = {
 
 type TreeItemData = SceneTreeItemData | SectionTreeItemData | EntityTreeItemData;
 
-function getEntityName(allTreeItems: Map<TreeItemValue, SectionTreeItemData | EntityTreeItemData>, entity: EntityBase): string {
+function GetEntityName(allTreeItems: Map<TreeItemValue, SectionTreeItemData | EntityTreeItemData>, entity: EntityBase): string {
     const item = allTreeItems.get(GetEntityId(entity));
-    return item?.type === "entity" ? item.getDisplayInfo().name : "";
+    let name = "";
+    if (item) {
+        if (item.type === "entity") {
+            const displayInfo = item.getDisplayInfo();
+            name = displayInfo.name;
+            displayInfo.dispose?.();
+        } else {
+            name = item.sectionName;
+        }
+    }
+    return name;
 }
 
 function ExpandOrCollapseAll(treeItem: SectionTreeItemData | EntityTreeItemData, open: boolean, openItems: Set<TreeItemValue>) {
@@ -406,11 +418,11 @@ const useStyles = makeStyles({
     },
 });
 
-const dropPositionClasses: Record<DropPosition, keyof ReturnType<typeof useStyles>> = {
+const DropPositionClasses = {
     inside: "treeItemDropTargetInside",
     before: "treeItemDropTargetBefore",
     after: "treeItemDropTargetAfter",
-};
+} as const satisfies Record<DropPosition, keyof ReturnType<typeof useStyles>>;
 
 const ActionCommand: FunctionComponent<{ command: SceneExplorerCommand<"inline", "action"> }> = (props) => {
     const { command } = props;
@@ -589,10 +601,15 @@ const EntityTreeItem: FunctionComponent<{
     const entityId = GetEntityId(entityItem.entity);
     const { dragDropConfig } = entityItem;
     const hasChildren = !!entityItem.children?.length;
-    const canDrag = enableDragToReparent && (dragDropConfig?.canDrag?.(entityItem.entity) ?? !!dragDropConfig);
+    const canDrag = enableDragToReparent && dragDropConfig?.canDrag(entityItem.entity);
 
     // dnd-kit draggable hook
-    const { attributes, listeners, setNodeRef: setDragRef, isDragging } = useDraggable({
+    const {
+        attributes,
+        listeners,
+        setNodeRef: setDragRef,
+        isDragging,
+    } = useDraggable({
         id: entityId,
         data: { entity: entityItem.entity, dragDropConfig },
         disabled: !canDrag,
@@ -716,11 +733,7 @@ const EntityTreeItem: FunctionComponent<{
             <MenuTrigger disableButtonEnhancement>
                 <FlatTreeItem
                     ref={setNodeRef}
-                    className={mergeClasses(
-                        classes.treeItem,
-                        isDragging && classes.treeItemDragging,
-                        dropPosition ? classes[dropPositionClasses[dropPosition]] : undefined
-                    )}
+                    className={mergeClasses(classes.treeItem, isDragging && classes.treeItemDragging, dropPosition ? classes[DropPositionClasses[dropPosition]] : undefined)}
                     key={entityId}
                     value={entityId}
                     // Disable manual expand/collapse when a filter is active.
@@ -739,7 +752,7 @@ const EntityTreeItem: FunctionComponent<{
                         className={mergeClasses(
                             hasChildren ? classes.treeItemLayoutBranch : classes.treeItemLayoutLeaf,
                             compactMode ? classes.treeItemLayoutCompact : undefined,
-                            dropPosition ? classes[dropPositionClasses[dropPosition]] : undefined
+                            dropPosition ? classes[DropPositionClasses[dropPosition]] : undefined
                         )}
                         style={isSelected ? { backgroundColor: tokens.colorNeutralBackground1Selected } : undefined}
                         actions={actions}
@@ -918,8 +931,7 @@ export const SceneExplorer: FunctionComponent<{
 
     // Drag-drop hooks - sensors and state/handlers for DndContext
     const sensors = useDragSensors();
-    const { draggedEntity, currentDropPosition, currentDropTarget, onDragStart, onDragMove, onDragEnd, onDragCancel } =
-        useSceneExplorerDragDrop<EntityBase>({
+    const { draggedEntity, currentDropPosition, currentDropTarget, onDragStart, onDragMove, onDragEnd, onDragCancel } = useSceneExplorerDragDrop<EntityBase>({
         allTreeItems,
         openItems,
         onDragDrop,
@@ -1183,7 +1195,7 @@ export const SceneExplorer: FunctionComponent<{
                             textShadow: `0 1px 2px ${tokens.colorNeutralBackground1}, 0 0 4px ${tokens.colorNeutralBackground1}`,
                         }}
                     >
-                        {getEntityName(allTreeItems, draggedEntity)}
+                        {GetEntityName(allTreeItems, draggedEntity)}
                     </Body1>
                 ) : null}
             </DragOverlay>

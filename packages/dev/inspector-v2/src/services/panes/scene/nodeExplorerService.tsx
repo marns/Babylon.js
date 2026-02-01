@@ -1,9 +1,9 @@
 import type { IDisposable, Node, Nullable } from "core/index";
+import type { DropPosition } from "../../../components/scene/sceneExplorerDragDrop";
 import type { ServiceDefinition } from "../../../modularity/serviceDefinition";
 import type { IGizmoService } from "../../gizmoService";
 import type { ISceneContext } from "../../sceneContext";
 import type { ISceneExplorerService } from "./sceneExplorerService";
-import type { DropPosition } from "../../../components/scene/sceneExplorerDragDrop";
 
 import {
     BorderNoneRegular,
@@ -145,7 +145,7 @@ export const NodeExplorerServiceDefinition: ServiceDefinition<[], [ISceneExplore
                     return true;
                 },
 
-                performDrop: (draggedNode: Node, targetNode: Node, dropPosition: DropPosition) => {
+                onDrop: (draggedNode: Node, targetNode: Node, dropPosition: DropPosition) => {
                     // Determine the new parent based on drop position
                     let newParent: Nullable<Node>;
                     if (dropPosition === "inside") {
@@ -156,7 +156,7 @@ export const NodeExplorerServiceDefinition: ServiceDefinition<[], [ISceneExplore
                         newParent = targetNode.parent;
                     }
 
-                    // Only reparent if the parent is actually changing
+                    // Only re-parent if the parent is actually changing
                     if (draggedNode.parent !== newParent) {
                         if (draggedNode instanceof TransformNode) {
                             // setParent preserves the world position/rotation/scale

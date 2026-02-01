@@ -1,11 +1,12 @@
-import type { DragEndEvent, DragMoveEvent, DragStartEvent } from "@dnd-kit/core";
-import { PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
-import type { TreeItemValue } from "@fluentui/react-components";
-import { useCallback, useRef, useState } from "react";
-
 import type { Nullable } from "core/index";
 
-import { GetEntityId, type EntityBase } from "./sceneExplorer";
+import type { DragEndEvent, DragMoveEvent, DragStartEvent } from "@dnd-kit/core";
+import type { TreeItemValue } from "@fluentui/react-components";
+
+import { PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { useCallback, useRef, useState } from "react";
+
+import { GetEntityId } from "./sceneExplorer";
 
 /**
  * Drop position relative to a target item.
@@ -20,20 +21,20 @@ export type DragDropConfig<T> = {
      * Determines if a specific entity can be dragged.
      * Defaults to true for all entities if not provided.
      */
-    canDrag?: (entity: T) => boolean;
+    canDrag: (entity: T) => boolean;
 
     /**
      * Validates if dropping draggedEntity onto targetEntity at the given position would be valid.
      * Use this for cycle detection and other validation logic.
      * Defaults to true if not provided.
      */
-    canDrop?: (draggedEntity: T, targetEntity: T, dropPosition: DropPosition) => boolean;
+    canDrop: (draggedEntity: T, targetEntity: T, dropPosition: DropPosition) => boolean;
 
     /**
-     * Performs the actual drop operation (reparenting, reordering, etc.).
+     * Performs the actual drop operation (re-parenting, reordering, etc.).
      * Called after a successful drop.
      */
-    performDrop?: (draggedEntity: T, targetEntity: T, dropPosition: DropPosition) => void;
+    onDrop: (draggedEntity: T, targetEntity: T, dropPosition: DropPosition) => void;
 };
 
 /**
@@ -44,7 +45,7 @@ export type DragDropConfig<T> = {
  * ```typescript
  * sceneExplorerService.onDragDrop = (event) => {
  *     console.log(`Dropped ${event.draggedEntity.name} ${event.dropPosition} ${event.targetEntity.name}`);
- *     // Call preventDefault() to handle the reparenting yourself
+ *     // Call preventDefault() to handle the re-parenting yourself
  *     // event.preventDefault();
  * };
  * ```
@@ -53,12 +54,12 @@ export type SceneExplorerDragDropEvent = {
     /**
      * The entity being dragged.
      */
-    draggedEntity: EntityBase;
+    draggedEntity: unknown;
 
     /**
      * The entity being dropped onto (the drop target).
      */
-    targetEntity: EntityBase;
+    targetEntity: unknown;
 
     /**
      * Where the dragged entity will be placed relative to the target.
@@ -66,7 +67,7 @@ export type SceneExplorerDragDropEvent = {
     dropPosition: DropPosition;
 
     /**
-     * Call this to prevent the default reparenting behavior.
+     * Call this to prevent the default re-parenting behavior.
      * Use this when you want to handle the drop operation yourself.
      */
     preventDefault: () => void;
@@ -75,23 +76,23 @@ export type SceneExplorerDragDropEvent = {
 /**
  * Tree item data needed for drag-drop operations.
  */
-export interface DragDropTreeItem {
+type DragDropTreeItem = {
     type: "entity";
-    entity: EntityBase;
+    entity: unknown;
     children?: DragDropTreeItem[];
-    dragDropConfig?: DragDropConfig<EntityBase>;
+    dragDropConfig?: DragDropConfig<unknown>;
     getDisplayInfo: () => { name: string; dispose?: () => void };
-}
+};
 
-interface DropState<TEntity> {
-    target: Nullable<TEntity>;
+type DropState<T> = {
+    target: Nullable<T>;
     position: DropPosition | null;
-    draggedEntity: Nullable<TEntity>;
-}
+    draggedEntity: Nullable<T>;
+};
 
 // Calculate drop position based on pointer Y within the element
 // "before" (top 25%), "inside" (middle 60%), "after" (bottom 15%)
-function calculateDropPosition(clientY: number, overRect: DOMRect): DropPosition {
+function CalculateDropPosition(clientY: number, overRect: DOMRect): DropPosition {
     const relativeY = clientY - overRect.top;
     const height = overRect.height;
     if (relativeY < height * 0.25) {
@@ -102,33 +103,34 @@ function calculateDropPosition(clientY: number, overRect: DOMRect): DropPosition
     return "inside";
 }
 
-export interface UseSceneExplorerDragDropParams<TEntity extends EntityBase> {
+type UseSceneExplorerDragDropParams<T> = {
     /** Map of entity IDs to tree item data */
-    allTreeItems: Map<TreeItemValue, { type: string; entity?: TEntity; children?: DragDropTreeItem[]; dragDropConfig?: DragDropConfig<TEntity> }>;
+    allTreeItems: Map<TreeItemValue, { type: string; entity?: T; children?: DragDropTreeItem[]; dragDropConfig?: DragDropConfig<T> }>;
     /** Set of currently expanded item IDs */
     openItems: Set<TreeItemValue>;
     /** Optional callback when a drop occurs - can call preventDefault() to handle drop yourself */
     onDragDrop?: (event: SceneExplorerDragDropEvent) => void;
     /** Called after a successful drop (when not prevented) for UI updates */
-    onDropped?: (draggedEntity: TEntity, targetEntity: TEntity, dropPosition: DropPosition) => void;
-}
+    onDropped?: (draggedEntity: T, targetEntity: T, dropPosition: DropPosition) => void;
+};
 
-export interface SceneExplorerDragDropResult<TEntity extends EntityBase> {
+type SceneExplorerDragDropResult<T> = {
     // State for rendering
-    draggedEntity: Nullable<TEntity>;
+    draggedEntity: Nullable<T>;
     currentDropPosition: DropPosition | null;
-    currentDropTarget: Nullable<TEntity>;
+    currentDropTarget: Nullable<T>;
 
     // Event handlers for DndContext
     onDragStart: (event: DragStartEvent) => void;
     onDragMove: (event: DragMoveEvent) => void;
     onDragEnd: (event: DragEndEvent) => void;
     onDragCancel: () => void;
-}
+};
 
 /**
  * Hook that returns dnd-kit sensors configured for the scene explorer.
  * Uses a 5px distance constraint to prevent accidental drags on click.
+ * @returns DndContext sensors
  */
 export function useDragSensors() {
     return useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -136,21 +138,16 @@ export function useDragSensors() {
 
 /**
  * Hook that encapsulates all drag-drop state and logic for the scene explorer.
- * Returns state for rendering and event handlers for DndContext.
+ * @returns state for rendering and event handlers for DndContext.
  */
-export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
-    allTreeItems,
-    openItems,
-    onDragDrop,
-    onDropped,
-}: UseSceneExplorerDragDropParams<TEntity>): SceneExplorerDragDropResult<TEntity> {
+export function useSceneExplorerDragDrop<T>({ allTreeItems, openItems, onDragDrop, onDropped }: UseSceneExplorerDragDropParams<T>): SceneExplorerDragDropResult<T> {
     // Drag state for rendering
-    const [draggedEntity, setDraggedEntity] = useState<Nullable<TEntity>>(null);
+    const [draggedEntity, setDraggedEntity] = useState<Nullable<T>>(null);
     const [currentDropPosition, setCurrentDropPosition] = useState<DropPosition | null>(null);
-    const [currentDropTarget, setCurrentDropTarget] = useState<Nullable<TEntity>>(null);
+    const [currentDropTarget, setCurrentDropTarget] = useState<Nullable<T>>(null);
 
     // Ref to avoid stale closures in event handlers
-    const dropStateRef = useRef<DropState<TEntity>>({ target: null, position: null, draggedEntity: null });
+    const dropStateRef = useRef<DropState<T>>({ target: null, position: null, draggedEntity: null });
 
     const resetState = useCallback(() => {
         setDraggedEntity(null);
@@ -160,7 +157,7 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
     }, []);
 
     const onDragStart = useCallback((event: DragStartEvent) => {
-        const entity = event.active.data.current?.entity as TEntity | undefined;
+        const entity = event.active.data.current?.entity as T | undefined;
         if (entity) {
             setDraggedEntity(entity);
             dropStateRef.current.draggedEntity = entity;
@@ -180,8 +177,8 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
                 return;
             }
 
-            const targetEntity = over.data.current?.entity as TEntity | undefined;
-            const dragDropConfig = over.data.current?.dragDropConfig as DragDropConfig<TEntity> | undefined;
+            const targetEntity = over.data.current?.entity as T | undefined;
+            const dragDropConfig = over.data.current?.dragDropConfig as DragDropConfig<T> | undefined;
 
             if (!targetEntity || !dragDropConfig || targetEntity === dragged) {
                 setCurrentDropPosition(null);
@@ -205,7 +202,7 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
             // Calculate current pointer position using delta from drag start
             const currentY = clientY + event.delta.y;
             const overRect = over.rect;
-            let dropPos = calculateDropPosition(currentY, overRect as unknown as DOMRect);
+            const dropPos = CalculateDropPosition(currentY, overRect as unknown as DOMRect);
 
             // If "after" on an expanded node with visible children, redirect to "before" on first child
             if (dropPos === "after") {
@@ -215,16 +212,16 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
                     const firstChild = targetTreeItem.children[0];
                     if (firstChild.type === "entity" && firstChild.entity !== dragged) {
                         setCurrentDropPosition("before");
-                        setCurrentDropTarget(firstChild.entity as TEntity);
+                        setCurrentDropTarget(firstChild.entity as T);
                         dropStateRef.current.position = "before";
-                        dropStateRef.current.target = firstChild.entity as TEntity;
+                        dropStateRef.current.target = firstChild.entity as T;
                         return;
                     }
                 }
             }
 
             // Validate with canDrop
-            const canDrop = dragDropConfig.canDrop?.(dragged, targetEntity, dropPos) ?? true;
+            const canDrop = dragDropConfig.canDrop(dragged, targetEntity, dropPos) ?? true;
             if (canDrop) {
                 setCurrentDropPosition(dropPos);
                 setCurrentDropTarget(targetEntity);
@@ -264,7 +261,7 @@ export function useSceneExplorerDragDrop<TEntity extends EntityBase>({
 
                 // If not prevented, perform the drop and notify
                 if (!isDefaultPrevented) {
-                    dragDropConfig.performDrop?.(droppedEntity, target, position);
+                    dragDropConfig.onDrop(droppedEntity, target, position);
                     onDropped?.(droppedEntity, target, position);
                 }
             }

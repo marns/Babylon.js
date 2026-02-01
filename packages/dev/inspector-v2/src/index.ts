@@ -1,7 +1,7 @@
 // Export the parts of inspector that are intended to be part of the public API.
 export * from "./components/properties/boundProperty";
 export * from "./components/properties/linkToEntityPropertyLine";
-export type { EntityBase, EntityDisplayInfo, SceneExplorerCommand, SceneExplorerCommandProvider, SceneExplorerDragDropEvent, SceneExplorerSection } from "./components/scene/sceneExplorer";
+export type { EntityDisplayInfo, SceneExplorerCommand, SceneExplorerCommandProvider, SceneExplorerDragDropEvent, SceneExplorerSection } from "./components/scene/sceneExplorer";
 export type { DragDropConfig, DropPosition } from "./components/scene/sceneExplorerDragDrop";
 export * from "./components/extensibleAccordion";
 export { SidePaneContainer } from "./components/pane";
