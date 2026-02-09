@@ -1,4 +1,4 @@
-name: Publish to GitHub Packages
+name: Publish Inspector to GitHub Packages
 
 on:
   push:
@@ -26,18 +26,12 @@ jobs:
         env:
           NODE_OPTIONS: '--max-old-space-size=8192'
 
-      - name: Build assets
-        run: npm run build:assets
+      - name: Build inspector (and dependencies)
+        run: npx nx run @babylonjs/inspector:build
         env:
           NODE_OPTIONS: '--max-old-space-size=8192'
 
-      - name: Build ES6 libraries
-        run: npx nx run-many --outputStyle=static --target=build --parallel --maxParallel=6 --projects=@babylonjs/core,@babylonjs/gui,@babylonjs/loaders,@babylonjs/materials,@babylonjs/serializers,@babylonjs/addons,@babylonjs/inspector
-        env:
-          NODE_OPTIONS: '--max-old-space-size=8192'
-
-      - name: Publish packages
+      - name: Publish inspector
         run: node .github/scripts/publish-fork.mjs
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NODE_OPTIONS: '--max-old-space-size=8192'
