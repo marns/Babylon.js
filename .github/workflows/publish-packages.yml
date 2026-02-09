@@ -32,12 +32,7 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=8192'
 
       - name: Build ES6 libraries
-        run: npm run build:es6:libs
-        env:
-          NODE_OPTIONS: '--max-old-space-size=8192'
-
-      - name: Build inspector
-        run: npx nx build @babylonjs/inspector
+        run: npx nx run-many --outputStyle=static --target=build --parallel --maxParallel=6 --projects=@babylonjs/core,@babylonjs/gui,@babylonjs/loaders,@babylonjs/materials,@babylonjs/serializers,@babylonjs/addons,@babylonjs/inspector
         env:
           NODE_OPTIONS: '--max-old-space-size=8192'
 
