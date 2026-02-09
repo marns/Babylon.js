@@ -1,0 +1,48 @@
+name: Publish to GitHub Packages
+
+on:
+  push:
+    branches: [martin]
+  workflow_dispatch:
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@marns'
+
+      - name: Install dependencies
+        run: npm install
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
+
+      - name: Build assets
+        run: npm run build:assets
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
+
+      - name: Build ES6 libraries
+        run: npm run build:es6:libs
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
+
+      - name: Build inspector
+        run: npx nx build @babylonjs/inspector
+        env:
+          NODE_OPTIONS: '--max-old-space-size=8192'
+
+      - name: Publish packages
+        run: node .github/scripts/publish-fork.mjs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_OPTIONS: '--max-old-space-size=8192'
