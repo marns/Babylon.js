@@ -32,6 +32,17 @@ const PACKAGES = [
     'packages/public/@babylonjs/inspector-v2',
 ];
 
+// Set of @babylonjs package names we actually publish
+const PUBLISHED_NAMES = new Set([
+    '@babylonjs/core',
+    '@babylonjs/gui',
+    '@babylonjs/loaders',
+    '@babylonjs/serializers',
+    '@babylonjs/materials',
+    '@babylonjs/addons',
+    '@babylonjs/inspector',
+]);
+
 function renamePkg(name) {
     if (!name.startsWith('@babylonjs/')) return name;
     const suffix = name.replace('@babylonjs/', '');
@@ -42,7 +53,13 @@ function rewriteDeps(deps) {
     if (!deps) return deps;
     const result = {};
     for (const [key, value] of Object.entries(deps)) {
-        result[renamePkg(key)] = key.startsWith('@babylonjs/') ? '*' : value;
+        if (PUBLISHED_NAMES.has(key)) {
+            // Only rewrite deps we actually publish under @marns
+            result[renamePkg(key)] = '*';
+        } else {
+            // Keep unpublished @babylonjs/* deps as-is (they're optional peers)
+            result[key] = value;
+        }
     }
     return result;
 }
